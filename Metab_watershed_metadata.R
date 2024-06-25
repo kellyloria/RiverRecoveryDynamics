@@ -175,24 +175,24 @@ pca_data <- pca_data %>%
   as.matrix()
 
 # Categorize summary columns based on their initial patterns
-col_patterns <- c("alt_va" = "altitude", "drain_area_va" = "drainage", "Water_Open_pct" = "water",
-                  "Ice_Snow_Perennial_pct" = "ice_snow", "Developed_OpenSpace_pct" = "developed",
-                  "Developed_LowIntensity_pct" = "developed", "Developed_MedIntensity_pct" = "developed",
-                  "Developed_HiIntensity_pct" = "developed", "Barren_Land_pct" = "barren_land",
+col_patterns <- c("alt_va" = "elevation", "drain_area_va" = "drainage_area", "Water_Open_pct" = "water",
+                  "Ice_Snow_Perennial_pct" = "ice_snow", "Developed_OpenSpace_pct" = "open_space",
+                  "Developed_LowIntensity_pct" = "open_space", "Developed_MedIntensity_pct" = "developed",
+                  "Developed_HiIntensity_pct" = "developed", "Barren_Land_pct" = "open_space",
                   "Forest_Deciduous_pct" = "forest", "Forest_Evergreen_pct" = "forest", 
-                  "Forest_mixed_pct" = "forest", "Shrub_Scrub_pct" = "shrub_scrub", 
-                  "Grass_landHerbaceous_pct" = "grassland", "Grass_PastureHay_pct" = "pasture_hay", 
+                  "Forest_mixed_pct" = "forest", "Shrub_Scrub_pct" = "shrub", 
+                  "Grass_landHerbaceous_pct" = "shrub", "Grass_PastureHay_pct" = "crops", 
                   "Cultivated_Crops_pct" = "crops", "Wetlands_Woody_pct" = "wetlands", 
-                  "Wetlands_EmergentHerb_pct" = "wetlands", "geol_gneiss" = "geology", 
-                  "geol_granitic" = "geology", "geol_ultramafic" = "geology", 
-                  "geol_quarternary" = "geology", "geol_sedimentary" = "geology", 
-                  "geol_volcanic" = "geology", "geol_intermediate_pultonic" = "geology", 
-                  "CAT_BASIN_AREA" = "basin_area", "CAT_BASIN_SLOPE" = "basin_slope", 
+                  "Wetlands_EmergentHerb_pct" = "wetlands", "geol_gneiss" = "geology_metamorphic", 
+                  "geol_granitic" = "geology_igneous", "geol_ultramafic" = "geology_metamorphic", 
+                  "geol_quarternary" = "geology_sedimentary", "geol_sedimentary" = "geology_sedimentary", 
+                  "geol_volcanic" = "geology_igneous", "geol_intermediate_pultonic" = "geology_igneous", 
+                  "CAT_BASIN_AREA" = "drainage_area", "CAT_BASIN_SLOPE" = "slope", 
                   "CAT_ELEV_MEAN" = "elevation", "CAT_ELEV_MIN" = "elevation", 
-                  "CAT_ELEV_MAX" = "elevation", "CAT_STREAM_SLOPE" = "stream_slope", 
+                  "CAT_ELEV_MAX" = "elevation", "CAT_STREAM_SLOPE" = "slope", 
                   "CAT_STREAM_LENGTH" = "stream_length", "road_Rural_den" = "road_density", 
                   "road_private_den" = "road_density", "road_Total_den" = "road_density", 
-                  "Tree_Canopyin100mRip" = "tree_canopy")
+                  "Tree_Canopyin100mRip" = "shading")
 
 # Apply the categorization to column names
 smry_categories <- factor(sapply(colnames(pca_data), function(col) {
@@ -201,7 +201,6 @@ smry_categories <- factor(sapply(colnames(pca_data), function(col) {
 
 
 pca <- prcomp(pca_data, center = TRUE, scale. = TRUE)
-summary(pca)
 
 # Visualize PCA eigenvalues
 fviz_eig(pca)
@@ -216,4 +215,6 @@ watershedplot <- fviz_pca_biplot(pca, geom.var = '', geom.ind = 'point', title =
 
 combined_plot <- ggarrange(watershed_loadplot, watershedplot, ncol = 2, nrow = 1)
 
-# ggsave(plot = combined_plot, filename = paste("./figures/Watershed_attributes.png",sep=""),width=13,height=6,dpi=300)
+# ggsave(plot = combined_plot, filename = paste("./figures/Watershed_attributes.png",sep=""),width=12,height=4.5,dpi=300)
+
+
