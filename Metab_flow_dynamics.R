@@ -1,27 +1,24 @@
 ############
+## Data aggregation of all stream gauge data
+##
+## Author: Kelly A. Loria
+## Date Created: 2024-06-26
+## Email: kellyloria@gmail.com
+##
+## ---------------------------
 
 setwd("R:/Users/kloria/Documents/River_Recovery_Analysis")
 
 metab_ts <- readRDS("./data/Metab_TS.rds")
-# Link in other watershed attributes
-
 str(metab_ts)
-
 ###########
-###########
-# Download stream flow from each site 
-## ---------------------------
-## Data aggregation of all stream gauge data
-##
-## Author: Kelly A. Loria
-## Date Created: 2020-09-26
-## Email: kelly.loria@nevada.unr.edu
+# Download stream flow + watershed attributes from each site 
 ##
 ## ---------------------------
-## Load packages:
-#install.packages("dataRetrieval")
-#library(remotes)
-#install_github("USGS-R/dataRetrieval", 
+# Load packages:
+# install.packages("dataRetrieval")
+# library(remotes)
+# install_github("USGS-R/dataRetrieval",
 #               build_opts = c("--no-resave-data", "--no-manual"),
 #               build_vignettes = TRUE)
 
@@ -32,11 +29,11 @@ library(scales)
 library(tidyverse)
 #library(zoo)
 
-# File path setup:
-if (dir.exists('/Users/kellyloria/Documents/UNR/Fall2020Projects/NHD_Tools/NHD_AttributeFiles/')){
-  inputDir<- '/Users/kellyloria/Documents/UNR/Fall2020Projects/NHD_Tools/NHD_AttributeFiles/'
-  outputDir<- '/Users/kellyloria/Documents/UNR/Fall2020Projects/NHD_Tools/NHD_output/2023_output/' 
-}
+# # File path setup:
+# if (dir.exists('/Users/kellyloria/Documents/UNR/Fall2020Projects/NHD_Tools/NHD_AttributeFiles/')){
+#   inputDir<- '/Users/kellyloria/Documents/UNR/Fall2020Projects/NHD_Tools/NHD_AttributeFiles/'
+#   outputDir<- '/Users/kellyloria/Documents/UNR/Fall2020Projects/NHD_Tools/NHD_output/2023_output/' 
+# }
 
 
 ## ---------------------------
@@ -44,20 +41,24 @@ if (dir.exists('/Users/kellyloria/Documents/UNR/Fall2020Projects/NHD_Tools/NHD_A
 #     List of all values:
 #     https://help.waterdata.usgs.gov/code/parameter_cd_query?fmt=rdb&inline=true&group_cd=%
 ## ---------------------------
-# 10336730 -GB
-# IN - 10336700
-# TH - 10336698
-# WD - 10336676
-# BW - 10336660
-# GN - 10336645
+unique(metab_ts$site_name)
+metab_ts$sitenumber <- sub("nwis_", "", metab_ts$site_name)
+metab_ts$USGSnumber <- sub("nwis_", "USGS-", metab_ts$site_name)
 
-# TRT - 10336780
-# UPTL - 10336610
-# UPTU - 103366092
+str(metab_ts)
+site_no<- unique(metab_ts$sitenumber)
+
+USGSnumber<- unique(metab_ts$USGSnumber)
+
 
 ### 1
-siteNumber <- "10336730" 
-Info <- readNWISsite(siteNumber)
+Info <- readNWISsite(site_no)
+hist(Info$drain_area_va)
+
+
+
+
+
 parameterCd <- c("00060")  # discharge
 
 #Raw daily data:
@@ -95,6 +96,9 @@ qwData1$alt_va <- Info$alt_va
 
 names(Info)
 
-nldi_nwis <- list(featureSource = "nwissite", featureID = "USGS-103366092")
+get_nldi_characteristics(nldi_feature, type = "local")
+
+
+nldi_nwis <- list(featureSource = "nwissite", featureID = USGSnumber)
 discover_nhdplus_id(nldi_feature = nldi_nwis)
 
