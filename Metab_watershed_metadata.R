@@ -133,7 +133,7 @@ nlcd_CNPY11 <- subset(nlcd_CNPY11, nlcd_CNPY11$COMID %in% Info$COMID) #
 dat_NHDinfo <- merge(dat_NHDinfo1, nlcd_CNPY11, by = "COMID", all = TRUE)
 
 ## ---------------------------
-# saveRDS(dat_NHDinfo, "./data/Metab_metadata.rds")
+# Visualize
 
 str(dat_NHDinfo)
 names(dat_NHDinfo)
@@ -150,6 +150,10 @@ dat_NHDinfo1 <- within(dat_NHDinfo1, {
 })
 
 unique(dat_NHDinfo1$state)
+
+
+## ---------------------------
+# saveRDS(dat_NHDinfo1, "./data/Metab_metadata.rds")
 
 
 # Filter relevant columns (Example: columns 8:47 as mentioned)
@@ -196,17 +200,20 @@ smry_categories <- factor(sapply(colnames(pca_data), function(col) {
 }))
 
 
-
 pca <- prcomp(pca_data, center = TRUE, scale. = TRUE)
+summary(pca)
 
 # Visualize PCA eigenvalues
 fviz_eig(pca)
 
 # Visualize PCA biplot with variable categories
-fviz_pca_biplot(pca, geom.var = 'arrow', geom.ind = 'point', title = '',
-                col.var = smry_categories, palette = 'Dark2')
+watershed_loadplot<- fviz_pca_biplot(pca, geom.var = 'arrow', geom.ind = 'point', title = '',
+                col.var = smry_categories)
 
 # Visualize PCA biplot with site domains
-fviz_pca_biplot(pca, geom.var = '', geom.ind = 'point', title = '',
+watershedplot <- fviz_pca_biplot(pca, geom.var = '', geom.ind = 'point', title = '',
                 col.ind = as.factor(domains))
 
+combined_plot <- ggarrange(watershed_loadplot, watershedplot, ncol = 2, nrow = 1)
+
+# ggsave(plot = combined_plot, filename = paste("./figures/Watershed_attributes.png",sep=""),width=13,height=6,dpi=300)
