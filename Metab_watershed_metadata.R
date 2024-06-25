@@ -55,12 +55,12 @@ Info$COMID <- sapply(nldi_features, function(feature) {
 
 nlcd_acc <- read.csv("/Users/kellyloria/Documents/UNR/Fall2020Projects/NHD_Tools/NHD_AttributeFiles/NLCD16_ACC_CONUS.TXT")
 head(nlcd_acc)
-colnames(nlcd_acc) <- c("COMID","OpenWater_pct", "PerennialIceSnow_pct", 
-                         "DevelopedOpenSpace_pct", "DevelopedLowIntensity_pct", 
-                         "DevelopedMedIntensity_pct", "DevelopedHiIntensity_pct", "BarrenLand_pct",
-                         "DeciduousForest_pct", "EvergreenForest_pct", "MixedForest_pct",
-                         "ShrubScrub_pct", "GrasslandHerbaceous_pct", "PastureHay_pct",
-                         "CultivatedCrops_pct", "WoodyWetlands_pct", "EmergentHerbWetlands_pct",
+colnames(nlcd_acc) <- c("COMID","Water_Open_pct", "Ice_Snow_Perennial_pct", 
+                         "Developed_OpenSpace_pct", "Developed_LowIntensity_pct", 
+                         "Developed_MedIntensity_pct", "Developed_HiIntensity_pct", "Barren_Land_pct",
+                         "Forest_Deciduous_pct", "Forest_Evergreen_pct", "Forest_mixed_pct",
+                         "Shrub_Scrub_pct", "Grass_landHerbaceous_pct", "Grass_PastureHay_pct",
+                         "Cultivated_Crops_pct", "Wetlands_Woody_pct", "Wetlands_EmergentHerb_pct",
                          "NoData")
 # Subset NLCD by our sites of interest
 nlcd_acc <- subset(nlcd_acc, nlcd_acc$COMID %in% Info$COMID) # the number of rows should be = to the number of rows in usgs_comid
@@ -134,4 +134,79 @@ dat_NHDinfo <- merge(dat_NHDinfo1, nlcd_CNPY11, by = "COMID", all = TRUE)
 
 ## ---------------------------
 # saveRDS(dat_NHDinfo, "./data/Metab_metadata.rds")
+
+str(dat_NHDinfo)
+names(dat_NHDinfo)
+
+dat_NHDinfo1 <- dat_NHDinfo %>%
+  mutate(state = sub(".* ([A-Z]{2})$", "\\1", station_nm))
+
+dat_NHDinfo1 <- within(dat_NHDinfo1, {
+  state[state == "BLACK EARTH CREEK NR BREWERY RD AT CROSS PLAINS,WI"] <- "WI"
+  state[state == "ARKANSAS RIVER NEAR AVONDALE, CO."] <- "CO"
+  state[state == "M FK BEARGRASS CR AT OLD CANNONS LN AT LOUISVILLE,"] <- "KY"
+  state[state == "EAST CANYON CREEK AB EAST CYN RES NR MORGAN, UTAH"] <- "UT"
+  state[state == "MUDDY FK AT MOCKINGBIRD VALLEY RD AT LOUISVILLE,KY"] <- "KY"
+})
+
+unique(dat_NHDinfo1$state)
+
+
+# Filter relevant columns (Example: columns 8:47 as mentioned)
+ws_smry <- dat_NHDinfo1 %>% select(state, COMID, 8:47)
+
+# Principal component analysis (PCA) on watershed summary attributes
+# Drop columns with >= 30% missing values, and rows with any missing values
+pca_data <- ws_smry %>% 
+  select(where(~ sum(is.na(.)) / length(.) < 0.3)) %>%  # Drop columns with >= 30% missing values
+  drop_na()                                              # Drop rows with any missing values
+
+
+domains <- pca_data$state
+
+# Prepare data for PCA by removing non-numeric and non-relevant columns
+pca_data <- pca_data %>% 
+  select(-state, -COMID) %>% 
+  select(where(~ sd(., na.rm = TRUE) != 0)) %>%  # Drop columns with no variance
+  as.matrix()
+
+# Categorize summary columns based on their initial patterns
+col_patterns <- c("alt_va" = "altitude", "drain_area_va" = "drainage", "Water_Open_pct" = "water",
+                  "Ice_Snow_Perennial_pct" = "ice_snow", "Developed_OpenSpace_pct" = "developed",
+                  "Developed_LowIntensity_pct" = "developed", "Developed_MedIntensity_pct" = "developed",
+                  "Developed_HiIntensity_pct" = "developed", "Barren_Land_pct" = "barren_land",
+                  "Forest_Deciduous_pct" = "forest", "Forest_Evergreen_pct" = "forest", 
+                  "Forest_mixed_pct" = "forest", "Shrub_Scrub_pct" = "shrub_scrub", 
+                  "Grass_landHerbaceous_pct" = "grassland", "Grass_PastureHay_pct" = "pasture_hay", 
+                  "Cultivated_Crops_pct" = "crops", "Wetlands_Woody_pct" = "wetlands", 
+                  "Wetlands_EmergentHerb_pct" = "wetlands", "geol_gneiss" = "geology", 
+                  "geol_granitic" = "geology", "geol_ultramafic" = "geology", 
+                  "geol_quarternary" = "geology", "geol_sedimentary" = "geology", 
+                  "geol_volcanic" = "geology", "geol_intermediate_pultonic" = "geology", 
+                  "CAT_BASIN_AREA" = "basin_area", "CAT_BASIN_SLOPE" = "basin_slope", 
+                  "CAT_ELEV_MEAN" = "elevation", "CAT_ELEV_MIN" = "elevation", 
+                  "CAT_ELEV_MAX" = "elevation", "CAT_STREAM_SLOPE" = "stream_slope", 
+                  "CAT_STREAM_LENGTH" = "stream_length", "road_Rural_den" = "road_density", 
+                  "road_private_den" = "road_density", "road_Total_den" = "road_density", 
+                  "Tree_Canopyin100mRip" = "tree_canopy")
+
+# Apply the categorization to column names
+smry_categories <- factor(sapply(colnames(pca_data), function(col) {
+  col_patterns[col]
+}))
+
+
+
+pca <- prcomp(pca_data, center = TRUE, scale. = TRUE)
+
+# Visualize PCA eigenvalues
+fviz_eig(pca)
+
+# Visualize PCA biplot with variable categories
+fviz_pca_biplot(pca, geom.var = 'arrow', geom.ind = 'point', title = '',
+                col.var = smry_categories, palette = 'Dark2')
+
+# Visualize PCA biplot with site domains
+fviz_pca_biplot(pca, geom.var = '', geom.ind = 'point', title = '',
+                col.ind = as.factor(domains))
 
