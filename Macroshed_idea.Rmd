@@ -1,0 +1,964 @@
+---
+title: 'Macroscale exploration watershed'
+subtitle: 'Inspired by Hacking Limnology 2023'
+output:
+    html_document:
+        theme: 'lumen'
+        toc: yes
+        toc_float:
+            collapsed: true
+        toc_depth: 3
+---
+
+```{r setup1, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, comment = ' ')
+```
+
+---
+
+# Before the workshop
+
+Please install the following packages:
+```{r install, eval=FALSE}
+
+#macrosheds
+devtools::install_github('https://github.com/MacroSHEDS/macrosheds.git')
+
+#tidyverse (dplyr, stringr, readr, etc.)
+install.packages('tidyverse')
+```
+
+Then download the MacroSheds data we will use
+```{r dl, eval=FALSE}
+
+library(macrosheds)
+
+# this is where files will be downloaded. feel free to change it.
+project_root <- '~/macrosheds_workshop' # originally created outside the repo
+
+# datasets we will use
+ms_download_ws_attr(project_root, dataset = 'summaries')
+ms_download_core_data(project_root, domains = c('niwot', 'plum', 'east_river', 'santee'))
+
+```
+
+These packages are optional (only used here and there, and the overall sequence doesn't depend on them)
+```{r install optional, eval=FALSE}
+
+install.packages('xts')         # time series representation
+install.packages('dygraphs')    # interactive plots
+install.packages('viridis')     # colorblind-friendly color palettes
+install.packages('factoextra')  # ordination, etc.
+install.packages('mapview')     # interactive maps
+install.packages('data.table')  # efficient computation
+#install.packages('whitebox')    # geospatial processing
+#whitebox::install_whitebox() #additional whitebox binaries. if this fails, use the next line
+# whitebox::install_whitebox(platform = 'linux_musl')
+```
+
+```{r install optional, eval=FALSE}
+library('xts')         # time series representation
+library('dygraphs')    # interactive plots
+library('viridis')     # colorblind-friendly color palettes
+library('factoextra')  # ordination, etc.
+library('mapview')     # interactive maps
+library('data.table')  # efficient computation
+library('whitebox')    # geospatial processing
+```
+
+---
+
+# MacroSheds
+
+_*long-term watershed ecosystem studies, harmonized*_
+
+## Goals
+ + enable calculation of input/output solute fluxes from diverse watersheds
+ + investigate:
+   + variation in magnitude, timing, form of N exports
+   + broad effects of watershed acidification
+   + variation in mineral weathering
+   + watershed sensitivity to climate change
+ 
+## Components
+ + [macrosheds.org](https://macrosheds.org)
+ + [The dataset](https://portal.edirepository.org/nis/mapbrowse?scope=edi&identifier=1262)
+ + [R package](https://github.com/MacroSHEDS/macrosheds)
+ + [data paper](https://aslopubs.onlinelibrary.wiley.com/doi/full/10.1002/lol2.10325)
+ + [All project code](https://github.com/MacroSHEDS)
+ 
+## Terms
+ + site: an individual gauging station or stream sampling location and its watershed
+ + domain: one or more sites under common management
+ + network: one or more domains under common funding/leadership
+ + flux: solute mass normalized to watershed area, over time (kg/ha/d)
+ 
+# Related resources
+
+ + [GEMStat](https://gemstat.org/) - global water quality database
+ + [GLORICH](https://www.geo.uni-hamburg.de/en/geologie/forschung/aquatische-geochemie/glorich.html) - global river chemistry database
+ + [Water Quality Portal (WQP)](https://www.waterqualitydata.us/) - USA water quality database
+    + [NWIS parameter codes](https://help.waterdata.usgs.gov/parameter_cd?group_cd=BIO) - Biological codes
+        + [49954]
+        + [63763]
+ + [Global River Water Quality Archive](https://essd.copernicus.org/articles/13/5483/2021/) - subset of: GEMStat + GLORICH + WQP + CESI (Canada) + Waterbase (Europe)
+ + CAMELS - Catchment Attributes and MEteorology for Large-sample Studies
+   + [USA](https://gdex.ucar.edu/dataset/camels.html)
+   + [Australia](https://www.webofscience.com/wos/woscc/full-record/WOS:000683780500004?SID=USW2EC0D4DYFZoLYt17MtaFngvTOg)
+   + [Brazil](https://www.webofscience.com/wos/woscc/full-record/WOS:000569420300002?SID=USW2EC0D4DYFZoLYt17MtaFngvTOg)
+   + [Chile](https://www.webofscience.com/wos/woscc/full-record/WOS:000449995800002?SID=USW2EC0D4DYFZoLYt17MtaFngvTOg)
+   + [Great Britain](https://www.webofscience.com/wos/woscc/full-record/WOS:000580860000002?SID=USW2EC0D4DYFZoLYt17MtaFngvTOg)
+ + [Caravan](https://zenodo.org/record/7944025) - subset of: CAMELS + HYSETS (N. Am.) + LamaH-CE (central Europe)
++ [CAMELS-Chem](https://hess.copernicus.org/preprints/hess-2022-81/) - chemistry for CAMELS-US
+
+# Part 1: Setup and overview
+
+```{r setup2}
+
+suppressPackageStartupMessages(library(tidyverse))
+library(macrosheds)
+
+options(readr.show_progress = FALSE,   #prevent gratuitous printing from read_csv
+        readr.show_col_types = FALSE,  #same
+        timeout = 600)                 #allow more time for dataset downloads
+
+project_root <- '~/macrosheds_workshop'
+```
+
+## Retrieval of basic site data, watershed summary attributes
+```{r retrieve1, cache=TRUE}
+
+ms_sites <- ms_load_sites() %>% 
+    filter(site_type == 'stream_gauge') #some precip gauges have the same names as stream gauges!
+
+?ms_load_variables
+ms_ts_variables <- ms_load_variables(var_set = 'timeseries') # timesiers by site and WS attributes 
+
+?ms_download_ws_attr
+ms_download_ws_attr(project_root, dataset = 'summaries') # commented to not download 
+
+?ms_load_product
+ws_smry <- ms_load_product(project_root, prodname = 'ws_attr_summaries')
+```
+
+ + watershed summary attribute definitions: [https://portal.edirepository.org/nis/metadataviewer?packageid=edi.1262.1] -> Data Entities -> `ws_attr_summaries.csv`
+ + two-letter variable prefixes: `variable_category_codes_ws_attr.csv`, `variable_data_source_codes_ws_attr.csv`
+
+## Visualize distributions of MacroSheds watershed summary attributes
+
+```{r view ms attrs, echo=FALSE, fig.width=16, fig.height=16}
+categories <- colnames(ws_smry)[-(1:4)] %>% 
+    substr(1, 1) %>% 
+    factor()
+levels(categories) <- c('clim', 'hydr', 'land', 'pmat', 'terr', 'vege')
+categories <- as.character(categories)
+
+category_colors <- c('vege' = 'forestgreen',
+                     'terr' = 'black',
+                     'pmat' = 'gray50',
+                     'land' = 'orange4',
+                     'clim' = 'darkblue',
+                     'hydr' = 'turquoise3')
+
+defpar <- par(mfrow = c(7, 7), mar = c(1, 2, 0, 0), oma = rep(0.5, 4))
+
+plot(1, 1, type = 'n', axes = F)
+legend('center', legend = names(category_colors), col = unname(category_colors),
+       lty = 1, lwd = 3, bty = 'n', cex = 1.5)
+
+for(i in 5:ncol(ws_smry)){
+    
+    varname <- colnames(ws_smry)[i]
+    
+    dvar <- ws_smry %>% 
+        select(site_code, !!varname) %>% 
+        na.omit() %>% 
+        filter(! is.na(!!varname)) %>% 
+        arrange(!!sym(varname))
+    
+    color <- category_colors[categories[i - 4]]
+    
+    barplot(dvar[[varname]], col = 'gray60', border = 'gray60')
+    box(col = color, lwd = 4)
+    mtext(varname, 3, line = -1.5, col = 'black')
+}
+
+par(defpar)
+```
+
+## Principal component analysis of watershed summary attributes
+Reducing the 91 different dimensions into 2 components to describe watershed attributes
+
+```{r pca}
+
+suppressPackageStartupMessages(library(factoextra))
+
+pca_data <- ws_smry %>% 
+    select(where( ~sum(is.na(.)) / length(.) < 0.3)) %>% #drop columns with >= 30% missing values
+    drop_na()                                            #drop rows with any missing values
+
+domains <- pca_data$domain
+
+pca_data <- pca_data %>% 
+    select(-site_code, -domain, -network) %>% 
+    select(where(~sd(., na.rm = TRUE) != 0)) %>%         #drop columns with no variance
+    as.matrix()
+
+smry_categories <- substr(colnames(pca_data), 1, 1)
+category_map <- c('c' = 'climate', 'h' = 'hydrology', 'l' = 'landcover',
+                  'p' = 'parentmat', 't' = 'terrain', 'v' = 'vegetation',
+                  'w' = 'ws area')
+smry_categories <- factor(category_map[match(smry_categories, names(category_map))])
+
+pca <- prcomp(pca_data, center = TRUE, scale. = TRUE)
+
+fviz_eig(pca)
+
+fviz_pca_biplot(pca, geom.var = 'arrow', geom.ind = 'point', title = '',
+                col.var = smry_categories, palette = 'Dark2')
+
+fviz_pca_biplot(pca, geom.var = '', geom.ind = 'point', title = '',
+                col.ind = as.factor(domains))
+```
+
+## Identify domains at elevational extremes (2 of each)
+
+```{r identify target domains}
+elev_extreme_domains <- ws_smry %>% 
+    filter(! is.na(te_elev_mean)) %>% #no watersheds delineated for McMurdo LTER
+    group_by(domain) %>% 
+    summarize(domain_mean_elev = mean(te_elev_mean)) %>% 
+    ungroup() %>% 
+    arrange(desc(domain_mean_elev)) %>% 
+    slice(c(1:2, (n() - 1):n())) %>% #2 highest and 2 lowest domains, by average watershed elevation
+    print() %>%
+    pull(domain)
+
+
+## or just pull out the site names 
+domains
+```
+
+## Load site-variable catalog; filter by domain
+
+```{r filter1}
+
+sitevars <- ms_load_variables('timeseries_by_site')
+
+sitevars <- filter(sitevars,
+                   domain %in% domains,
+                   chem_category == 'stream_conc') #interpellate chem out to 15 days
+
+hist(sitevars$mean_obs_per_day)
+
+length(unique(sitevars$site_code)) # n sites
+```
+
+## What variables are shared by at least one site from each of these 4 domains?
+
+```{r shared variables}
+library(purrr)
+
+get_shared_domain_vars <- function(df){
+
+    df %>% 
+        group_split(domain) %>% 
+        map(~ pluck(.x, 'variable_code')) %>% 
+        reduce(intersect)
+}
+
+get_shared_domain_vars(sitevars)
+# okay so there is none 
+# lets look for DOC, N, P, Temp
+
+## YOU ARE HRTR
+
+sitevar_sub <- filter(sitevars,
+                      variable_code == 'DO'|
+                          variable_code == 'DOC'|
+                          variable_code == 'pheophy'|
+                          variable_code == 'NO3_N'|
+                          variable_code == 'NH3_N'|
+                           variable_code == 'NH4_NH3_N'|
+                           variable_code == 'NH4_N'|
+                         variable_code == 'NO2_N'|
+                      variable_code == 'NO3_NO2_N'|
+                      variable_code == 'PO4_P'|
+                          variable_code == 'SRP'|
+                          variable_code == 'TSS'|
+                          variable_code == 'suspSed')
+                       
+
+# get_shared_domain_vars(sitevar_sub)
+
+
+```
+
+## Again, but filter for variables recorded for >= 2 years, at >= average rate of 36 obs/year
+
+```{r shared variables filt}
+
+sitevars <- sitevar_sub %>% 
+    mutate(ndays = difftime(last_record_utc, first_record_utc, unit = 'days')) %>% 
+    filter(ndays >= 2 * 365.25,
+           mean_obs_per_day * 365.25 >= 36)
+
+get_shared_domain_vars(sitevar_sub)
+```
+
+## Retrieve core time-series data
+
+```{r retrieve2, cache=TRUE}
+
+unique(sitevars$domain)
+
+# ?ms_download_core_data()
+# ms_download_core_data(project_root, domains = sitevars$domain) # slower download line 
+
+?ms_load_product
+# doc <- ms_load_product(
+#     project_root,
+#     prodname = 'stream_chemistry',
+#     filter_vars = 'DOC',
+#     domain = sitevars$domain,
+#     warn = FALSE
+# )
+
+unique(doc$var)
+table(doc$ms_status)
+table(doc$ms_interp)
+```
+
+ + time-series column definitions: [https://portal.edirepository.org/nis/metadataviewer?packageid=edi.1262.1] -> Data Entities -> e.g. `timeseries_boulder.csv`
+ + two-letter variable_code prefixes (ts only)
+   + G = grab sample
+   + I = installed instrument
+   + S = sensor
+   + N = non-sensor
+ + variable units and full names are included in `sitevars`
+ 
+## Visualize stream discharge
+
+```{r view discharge series}
+
+library(viridis)
+
+plot_q <- function(ms_root, domain){
+
+    q <- ms_load_product(ms_root, prodname = 'discharge', domains = domain)
+    
+    current_year <- as.numeric(strftime(Sys.Date(), format = '%Y'))
+    earliest_year <- as.numeric(strftime(min(q$datetime), format = '%Y'))
+    nyears <- current_year - earliest_year
+    yrcols <- viridis(n = nyears)
+
+    sites <- unique(q$site_code)
+
+    plotrc <- ceiling(sqrt(length(sites)))
+    doyseq <- seq(1, 366, 30)
+    par(mfrow = c(plotrc, plotrc), mar = c(1, 2, 0, 0), oma = c(0, 0, 2, 0))
+
+    for(s in sites){
+
+        plot(NA, NA, xlim = c(1, 366), ylim = c(0, nyears), xaxs = 'i', yaxs = 'i',
+             ylab = '', xlab = '', yaxt = 'n', cex.axis = 0.6, xaxt = 'n', xpd = NA)
+        axis(1, doyseq, doyseq, tick = FALSE, line = -2, cex.axis = 0.8)
+        axis(2, 1:nyears, earliest_year:(current_year - 1), las = 2, cex.axis = 0.6,
+             hadj = 0.7)
+
+        qsub <- q %>%
+            filter(domain == domain, site_code == s) %>%
+            mutate(doy = as.numeric(strftime(datetime, format = '%j', tz = 'UTC')),
+                   yr_offset = lubridate::year(datetime) - earliest_year)
+
+        lubridate::year(qsub$datetime) <- 1972
+        yrs <- unique(qsub$yr_offset)
+
+        for(i in 1:length(yrs)){
+            qss <- qsub %>%
+                filter(yr_offset == yrs[i]) %>%
+                arrange(doy)
+            lines(qss$doy, c(scale(qss$val)) + qss$yr_offset, col = yrcols[i])
+        }
+
+        mtext(s, 3, outer = FALSE, line = -2)
+    }
+
+    mtext(paste0(domain, ' (DOY vs. Year)'), 3, outer = TRUE)
+}
+
+# plots for zones: 
+plot_q(project_root, 'baltimore')
+plot_q(project_root, 'boulder')
+plot_q(project_root, 'calhoun') # not great
+plot_q(project_root, 'catalina_jemez') 
+plot_q(project_root, 'east_river') 
+plot_q(project_root, 'fernow') 
+plot_q(project_root, 'hbef') 
+plot_q(project_root, 'hjandrews') 
+plot_q(project_root, 'konza') 
+plot_q(project_root, 'krew') 
+plot_q(project_root, 'niwot') 
+plot_q(project_root, 'plum') 
+plot_q(project_root, 'santa_barbara') 
+plot_q(project_root, 'santee') 
+plot_q(project_root, 'shale_hills') 
+plot_q(project_root, 'suef') 
+plot_q(project_root, 'usgs') 
+plot_q(project_root, 'walker_branch') 
+```
+
+## Visualize solute distributions
+
+```{r view solute distributions, fig.width = 16, fig.height = 14}
+
+plot_conc <- function(ms_root, chemvar){
+    
+    unit <- ms_ts_variables %>% 
+        filter(variable_code == !!chemvar,
+               chem_category == 'stream_conc') %>%
+        pull(unit)
+    
+    d <- ms_load_product(ms_root,
+                         prodname = 'stream_chemistry',
+                         filter_vars = chemvar,
+                         warn = FALSE)
+    
+    ms_sites <- ms_load_sites() %>% 
+        filter(site_type != 'precip_gauge')
+    
+    d <- ms_sites %>% 
+        select(site_code, domain, network) %>% 
+        right_join(d, by = 'site_code')
+    
+    domains <- na.omit(unique(d$domain))
+    
+    dmncolors <- c('brown4', 'brown1', 'blueviolet', 'blue4', 'dodgerblue3', 'blanchedalmond',
+              'bisque4', 'khaki1', 'gray70', 'gray25', 'aquamarine4',
+              'darkorange2', 'darkolivegreen4', 'darkolivegreen1', 'darkmagenta',
+              'darkgoldenrod1', 'cyan3', 'deeppink',
+              'darkred', 'green1', 'palevioletred4', 'peru', 'yellow', 'springgreen2',
+              'mediumorchid3', 'white', 'skyblue', 'burlywood4', 'cornflowerblue')
+    dmncolors <- dmncolors[1:length(domains)]
+    
+    log_ticks <- c(0.001, 0.01, 0.1, 1, 10, 100, 1000, 10000, 100000)
+    
+    d_by_max <- d %>%
+        filter(! is.na(val)) %>%
+        group_by(network, domain, site_code) %>%
+        summarize(maxval = max(val, na.rm = TRUE),
+                  medianval = median(val, na.rm = TRUE),
+                  n = n(),
+                  .groups = 'drop') %>%
+        mutate(ntw_dmn_sit = paste(network, domain, site_code,
+                                   sep = ' > ')) %>%
+        filter(n > 30)
+    
+    site_order <- d_by_max$ntw_dmn_sit[order(d_by_max$medianval)]
+    
+    sites_with_data <- d_by_max$site_code
+    
+    d_boxplot <- d %>%
+        filter(site_code %in% !!sites_with_data) %>%
+        group_by(network, domain, site_code) %>%
+        summarize(box_stats = list(boxplot.stats(val)),
+                  .groups = 'drop') %>%
+        mutate(color = dmncolors[match(domain, domains)],
+               ntw_dmn_sit = paste(network, domain, site_code,
+                                   sep = ' > '))
+    
+    included_domain_inds <- which(domains %in% unique(d_by_max$domain))
+    excluded_domains <- domains[-included_domain_inds]
+    included_domains <- domains[included_domain_inds]
+    included_dmncolors <- dmncolors[included_domain_inds]
+    
+    d_boxplot <- d_boxplot[rev(order(match(d_boxplot$ntw_dmn_sit, site_order))), ]
+    
+    nsites <- nrow(d_boxplot)
+    ylims <- range(d$val, na.rm = TRUE)
+    ylims[ylims == 0] <- 0.001
+    ylims <- log(ylims)
+    plot(1:nsites, rep(0, nsites), ylim = ylims, type = 'n', yaxt = 'n',
+         ylab = paste0('log ', sub('_', '-', chemvar), ' (', unit, ')'),
+         xlab = '', xaxt = 'n', yaxs = 'i',
+         main = paste(chemvar, 'distribution across sites'), xlim = c(1, nsites))
+    axis(2, at = log(log_ticks), labels = log_ticks)
+    corners = par("usr")
+    rect(corners[1], corners[3], corners[2], corners[4], col = 'black')
+    
+    for(j in 1:nsites){
+        color <- slice(d_boxplot, j) %>% pull(color)
+        stats <- (slice(d_boxplot, j) %>% pull(box_stats))[[1]]
+        outliers <- log(stats$out)
+        box_whisk <- log(stats$stats)
+        segments(x0 = j, x1 = j, y0 = box_whisk[1], y1 = box_whisk[2],
+                 col = color, lwd = 2, lend = 3)
+        points(x = j, y = box_whisk[3], col = color, pch = 20)
+        segments(x0 = j, x1 = j, y0 = box_whisk[4], y1 = box_whisk[5],
+                 col = color, lwd = 2, lend = 3)
+        points(x = rep(j, length(outliers)), y = outliers, col = color,
+               pch = 20, cex = 0.2)
+    }
+    
+    legend('topright', legend = included_domains, lty = 1,
+           col = included_dmncolors, bty = 'n', lwd = 3,
+           text.col = 'white', ncol = ceiling(length(included_domains) / 7))
+    # newline_seq <- try(seq(6, length(excluded_domains), 6), silent=TRUE)
+    # if(! inherits(newline_seq, 'try-error')){
+    #     excluded_domains[newline_seq] = paste0('\n', excluded_domains[newline_seq])
+    # }
+    text(x = quantile(1:nsites, 0.15),
+         y = quantile(ylims, 0.95), adj = 0, col = 'green',
+         labels = paste0('Sites: ', length(unique(d_boxplot$ntw_dmn_sit))))
+}
+
+#note that Mike ran these with all domains downloaded
+plot_conc(project_root, 'NO3_N') #nitrate-as-nitrogen
+plot_conc(project_root, 'DOC')
+plot_conc(project_root, 'pheophy')
+plot_conc(project_root, 'TSS')
+plot_conc(project_root, 'SRP')
+plot_conc(project_root, 'suspSed')
+```
+```{r save data}
+ms_root = 'data/macrosheds'
+ms_download_core_data(macrosheds_root = ms_root, domains = c('baltimore',
+                                                             'boulder',
+                                                             'calhoun',
+                                                             'catalina_jemez',
+                                                             'east_river',
+                                                             'fernow', 'hbef',
+                                                             'hjandrews', 'konza',
+                                                             'krew', 
+                                                             'niwot', 'plum',
+                                                             'santa_barbara',
+                                                             'santee',
+                                                             'shale_hills',
+                                                             'suef',
+                                                             'usgs',
+                                                             'walker_branch')) 
+    
+    
+ms_download_ws_attr(macrosheds_root = ms_root, dataset = 'time series')
+macrosheds_data <- ms_load_product(macrosheds_root = ms_root, 
+                                   prodname = 'stream_chemistry', 
+                                   filter_vars = 'NO3_N')
+macrosheds_data_ws <- ms_load_product(macrosheds_root = ms_root, 
+                                   prodname = 'ws_attr_timeseries:all')
+
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+# Part 2: Which variables best predict DOC at high and low elevation sites?
+
+## remove questionable observations; plot time series of interest
+
+```{r ms_status}
+
+doc_wide <- doc %>% 
+    filter(ms_status == 0) %>% #remove ms_status == 1 (questionable)
+    select(datetime, site_code, val) %>% 
+    left_join(select(ms_sites, site_code, domain), #join column of domain names
+              by = 'site_code') %>% 
+    filter(! is.na(domain)) %>%  #some site data is missing in MS version 1 (whoops)
+    pivot_wider(names_from = c(domain, site_code),
+                values_from = val,
+                names_sep = '__') %>% #column names are of the form <domain>__<site_code>
+    arrange(datetime) %>% #make sure it's all sorted chronologically
+    complete(datetime = seq(first(datetime), last(datetime), by = 'day')) #explicate missing observations
+
+suppressPackageStartupMessages(library(xts))
+library(dygraphs)
+
+dmn_colors <- factor(str_split_fixed(colnames(doc_wide)[-1], '__', n = 2)[, 1])
+levels(dmn_colors) <- hcl.colors(length(elev_extreme_domains))
+
+dg <- dygraph(xts(x = doc_wide[, -1], order.by = doc_wide$datetime)) %>% 
+    dyRangeSelector()
+for(i in 2:ncol(doc_wide)){
+    dg <- dySeries(dg, colnames(doc_wide)[i], color = as.character(dmn_colors[i - 1]))
+}
+dg
+```
+
+## Which watershed attributes predict temporal variation in DOC concentration
+
+```{r regression}
+
+#compute CV for each site
+#join ws attrs
+#glmnet
+```
+
+## Convert nitrate-N concentration to daily flux (basic mode)
+
+```{r flux calculation}
+
+NO3_N_conc <- ms_load_product(
+    project_root,
+    prodname = 'stream_chemistry',
+    filter_vars = 'NO3_N',
+    domain = 'niwot',
+    warn = FALSE
+)
+
+Q <- ms_load_product(
+    project_root,
+    prodname = 'discharge',
+    domain = 'niwot',
+    warn = FALSE
+)
+
+NO3_N_conc <- semi_join(NO3_N_conc, Q, by = 'site_code')
+
+#before
+filter(NO3_N_conc,
+       datetime == as.POSIXct('1985-05-09 00:00:00', tz = 'UTC'),
+       site_code == 'ALBION')
+
+NO3_N_flux <- suppressPackageStartupMessages({
+    ms_calc_flux(NO3_N_conc, Q, q_type = 'discharge')
+})
+
+#after
+filter(NO3_N_flux,
+       datetime == as.POSIXct('1985-05-09 00:00:00', tz = 'UTC'),
+       site_code == 'ALBION')
+```
+
+## Compute annual nitrate-N load (still in development)
+
+```{r load calc, eval=FALSE}
+
+# this function will be officially included in the macrosheds package when we
+# release version 2 of the MacroSheds dataset, which will include monthly and
+# yearly load estimates based on Gubbins et al. in prep. For now, you can call it
+# with `:::`, which accesses "internal" package functions.
+NO3_N_load <- macrosheds:::ms_calc_flux_rsfme(
+    NO3_N_conc, Q,
+    method = 'beale',
+    aggregation = 'annual'
+)
+```
+
+## WRTDS load via EGRET package
+
+```{r wrtds, eval=FALSE}
+
+ms_run_egret(stream_chemistry = filter(NO3_N_conc, site_code == 'ALBION'),
+             discharge = filter(Q, site_code == 'ALBION'))
+```
+
+## Basic method (just add up daily flux)
+
+```{r basic annual load}
+
+library(imputeTS)
+
+siteyears_keep <- NO3_N_flux %>% 
+    group_by(site_code, year = strftime(datetime, format = '%Y')) %>%
+    summarize(n = length(na.omit(val))) %>% 
+    filter(n > 365.25 * 0.5)
+
+NO3_N_flux_interp <- NO3_N_flux %>% 
+    filter(site_code == 'ALBION',
+           datetime >= as.Date('1996-01-01'),
+           datetime <= as.Date('2000-12-31')) %>% 
+    arrange(datetime) %>% 
+    complete(datetime = seq(first(datetime), last(datetime), by = 'day')) %>% 
+    mutate(val = na_interpolation(val))
+
+NO3_N_flux_interp %>% 
+    group_by(year = strftime(datetime, format = '%Y')) %>% 
+    summarize(load_kg_ha = sum(val))
+```
+
+## (Un)scale flux by watershed area
+
+```{r scale by watershed area}
+
+(kg_ha_d <- slice(NO3_N_flux, 1:3))
+(kg_d <- ms_undo_scale_flux_by_area(kg_ha_d))
+(kg_ha_d <- ms_scale_flux_by_area(kg_d))
+#NOTE: not every function set up to perform error computations yet
+```
+
+# Part 3: Useful tools
+
+## Automated citation/acknowledgement for any subset of the MacroSheds dataset
+
+```{r attribution, cache=TRUE}
+
+?ms_generate_attribution
+
+attrib <- ms_generate_attribution(doc, chem_source = 'stream')
+
+ls.str(attrib)
+attrib$intellectual_rights_notifications
+attrib$intellectual_rights_explanations
+t(attrib$full_details_timeseries[1, ])
+
+attrib <- ms_generate_attribution(doc, chem_source = 'stream', write_to_dir = '~')
+read_file('~/macrosheds_attribution_information/ms_bibliography.bib') %>% 
+    substr(1, 1092) %>% 
+    cat()
+```
+
+## Watershed delineation
+
+(interactive, so output not included in the HTML version of this document)
+
+*can work where StreamStats fails, especially in small watersheds*
+
+```{r watershed delineation, eval=FALSE}
+
+# whitebox::install_whitebox() #if this fails, use the next line
+# whitebox::install_whitebox(platform = 'linux_musl')
+
+tmp <- tempdir()
+
+out <- ms_delineate_watershed(
+    lat = 44.21013,
+    long = -122.2571,
+    crs = 4326,
+    write_dir = tmp,
+    write_name = 'example_site',
+)
+
+select <- dplyr::select #resolve namespace conflict introduced by raster package
+
+str(out) #specifications of your successful delineation
+```
+
+## Load spatial data
+
+(watershed boundaries, precip gauge locations, stream gauge locations)
+
+```{r spatial data}
+
+suppressPackageStartupMessages(library(mapview))
+
+ws_bound <- ms_load_spatial_product(project_root, 'ws_boundary', domain = 'boulder')
+prcp_gauges <- ms_load_spatial_product(project_root, 'stream_gauge_locations', domain = 'boulder')
+strm_gauges <- ms_load_spatial_product(project_root, 'precip_gauge_locations', domain = 'boulder')
+
+mapview(ws_bound) + mapview(prcp_gauges) + mapview(strm_gauges, col.regions = rainbow(n = 3))
+```
+
+## More vignettes
+
+Vignettes will only load if you installed `macrosheds` with `build_vignettes=TRUE`, but they're also hosted as markdown files [here](https://github.com/MacroSHEDS/macrosheds/tree/master/vignettes). These provide tutorials on data retrieval, flux calculation, watershed delineation, and precip interpolation.
+
+```{r more vignettes, eval=FALSE}
+vignette(package = 'macrosheds')
+vignette('ms_watershed_delineation', package = 'macrosheds')
+```
+
+```{r other tools}
+
+?ms_synchronize_timestep  # upsample or downsample macrosheds data
+?ms_calc_watershed_precip # spatial interpolation of precip gauge data
+?ms_separate_baseflow     # baseflow/stormflow separation via hydrostats
+```
+
+# Part 4: linking to the CAMELS datasets
+
+## Download CAMELS-US
+*(just watershed descriptors and streamflow time series)*
+
+```{r camels, cache=TRUE}
+
+camels_dir <- file.path(project_root, 'camels')
+dir.create(camels_dir, showWarnings = FALSE)
+
+attr_categories <- c('clim', 'geol', 'soil', 'topo', 'vege', 'hydro')
+
+#watershed attributes
+for(x in attr_categories){
+    download.file(paste0('https://gdex.ucar.edu/dataset/camels/file/camels_', x, '.txt'),
+                  destfile = paste0(camels_dir, '/', x, '.txt'))
+}
+
+# #Daymet forcings
+# download.file('https://gdex.ucar.edu/dataset/camels/file/basin_timeseries_v1p2_modelOutput_daymet.zip',
+#               destfile = file.path(camels_dir, 'daymet.zip'))
+
+#observed flow
+# download.file('https://gdex.ucar.edu/dataset/camels/file/basin_timeseries_v1p2_metForcing_obsFlow.zip',
+#               destfile = file.path(camels_dir, 'flow.zip'))
+# unzip(file.path(camels_dir, 'flow.zip')) #untested. be aware of the truncation issue described in ?unzip
+```
+
+## Visualize CAMELS
+
+```{r camels view, fig.width = 14, fig.height = 14}
+
+view_attr_dists <- function(path_to_camels){
+
+    char_cols <- c('dom_land_cover', 'geol_1st_class', 'geol_2nd_class',
+                   'high_prec_timing', 'low_prec_timing')
+    
+    vege <- read_delim(file.path(path_to_camels, 'vege.txt'), delim = ';')
+    topo <- read_delim(file.path(path_to_camels, 'topo.txt'), delim = ';')
+    geol <- read_delim(file.path(path_to_camels, 'geol.txt'), delim = ';')
+    soil <- read_delim(file.path(path_to_camels, 'soil.txt'), delim = ';')
+    clim <- read_delim(file.path(path_to_camels, 'clim.txt'), delim = ';')
+    hydro <- read_delim(file.path(path_to_camels, 'hydro.txt'), delim = ';')
+
+    categories <- c(rep('vege', ncol(vege) - 1),
+                    rep('topo', ncol(topo) - 1),
+                    rep('geol', ncol(geol) - 1),
+                    rep('soil', ncol(soil) - 1),
+                    rep('clim', ncol(clim) - 1),
+                    rep('hydr', ncol(hydro) - 1))
+    
+    d <- reduce(list(vege, topo, geol, soil, clim, hydro), full_join, by = 'gauge_id') %>% 
+        # select(-matches(!!char_cols)) %>% 
+        mutate(across(-c(gauge_id, !!char_cols), as.numeric))
+        
+    category_colors <- c('vege' = 'forestgreen',
+                         'topo' = 'black',
+                         'geol' = 'gray50',
+                         'soil' = 'orange4',
+                         'clim' = 'darkblue',
+                         'hydr' = 'turquoise3')
+    
+    nrows <- ceiling(sqrt(length(categories)))
+    par(mfrow = c(nrows, length(categories) / nrows),
+        mar = c(1, 2, 0, 0), oma = rep(0.5, 4))
+    
+    plot(1, 1, type = 'n', axes = F)
+    legend('left', legend = names(category_colors), col = unname(category_colors),
+           lty = 1, lwd = 3, bty = 'n')
+    legend('right', legend = c('CAMELS', 'MacroSheds'),
+           fill = c('gray70', 'darkviolet'), bty = 'n', border = NA)
+    
+    for(i in 2:ncol(d)){
+        
+        varname <- colnames(d)[i]
+        if(! varname %in% char_cols){
+            
+            dvar <- d %>% 
+                select(gauge_id, !!varname) %>% 
+                filter(! is.na(!!varname)) %>% 
+                arrange(!!sym(varname))
+            
+            source_color <- if_else(grepl('^[0-9]{6,}$', dvar$gauge_id), 'gray70', 'darkviolet')
+            color <- category_colors[categories[i - 1]]
+            # color <- category_colors[names(category_colors) == categories[i - 1]]
+            
+            barplot(dvar[[varname]], col = source_color, border = source_color)
+            box(col = color, lwd = 4)
+            mtext(varname, 3, line = -1.5, col = 'black')
+        }
+    }
+}
+
+view_q_dists <- function(path_to_camels){
+    
+    flowdir <- file.path(path_to_camels, 'basin_dataset_public_v1p2/usgs_streamflow')
+    flowfiles <- list.files(flowdir, recursive = TRUE, pattern = 'streamflow_qc\\.txt$',
+                            full.names = TRUE)
+    
+    par(mfrow = c(1, 1), mar = c(2, 4, 1, 1))
+    plot(as.Date(c('1930-01-01', '2023-07-30')), log(c(0.001, 1e6)), type = 'n',
+         xlab = '', ylab = 'Log discharge (cfs)', yaxt = 'n')
+    yaxis <- c(0.001, 0.01, 0.1, 1, 10, 100, 1000, 10000, 1e5, 1e6)
+    axis(2, log(yaxis), labels = as.character(yaxis))
+    
+    for(f in flowfiles){
+        
+        flow <- read.fwf(
+            f,
+            widths = c(9, 4, 3, 3, 9, 2),
+            header = FALSE,
+            strip.white = TRUE,
+            colClasses = 'character',
+            col.names = c('gauge_id', 'year', 'month', 'day', 'Q_cfs', 'flag')
+        ) %>%
+            as_tibble() %>%
+            mutate(date = as.Date(paste(year, month, day), format = '%Y %m %d'),
+                   Q_cfs = log(as.numeric(Q_cfs))) %>%
+            mutate(Q_cfs = if_else(Q_cfs == -999, NA_real_, Q_cfs))
+        
+        lines(flow$date, flow$Q_cfs, col = adjustcolor('black', alpha.f = 0.3))
+        
+                   #      mm/d        cfs         m^3/ft^3      mm/m   s/d     m^2
+                   # discharge = discharge * 0.028316846 * 1000 * 86400 / ws_area_m2)
+    }
+}
+
+view_attr_dists(camels_dir)
+```
+
+## Merge MacroSheds and CAMELS
+
+```{r camels supplement}
+
+ms_download_ws_attr(project_root, dataset = 'CAMELS summaries')
+ms_cmls <- ms_load_product(project_root, prodname = 'ws_attr_CAMELS_summaries') %>% 
+    rename(geol_porostiy = geol_porosity, #accommodate typo in CAMELS dataset
+           q5 = Q5, q95 = Q95, baseflow_index = baseflow_index_landson) #and some slight name differences
+
+#proportion of missing values per column
+apply(ms_cmls, MARGIN = 2, function(x) round(sum(! is.na(x)) / length(x), 2))
+
+camels_ms_dir <- file.path(project_root, 'camels_macrosheds_merge')
+dir.create(camels_ms_dir, showWarnings = FALSE)
+
+cmls_topo <- read_delim(file.path(camels_dir, 'topo.txt'), delim = ';') %>% 
+    rename(area = area_gages2) %>% #could also use area_geospa_fabric here
+    mutate(across(everything(), as.character))
+    
+ms_cmls %>% 
+    select(gauge_id = site_code, matches(colnames(cmls_topo)), 'area') %>%
+    mutate(across(everything(), as.character)) %>% 
+    bind_rows(cmls_topo) %>% 
+    write_delim(file.path(camels_ms_dir, 'topo.txt'), delim = ';')
+
+camels_ms_merge <- function(dataset, read_dir, write_dir){
+    
+    #dataset: character; one of "vege", "topo", "soil", "geol", "hydro", "clim"
+    
+    cmls_d <- read_delim(paste0(read_dir, '/', dataset, '.txt'), delim = ';') %>% 
+        mutate(across(everything(), as.character))
+    
+    missing_vars <- setdiff(colnames(cmls_d), colnames(ms_cmls)) %>% 
+        str_subset('gauge_id', negate = TRUE)
+    
+    if(length(missing_vars)){
+        print(paste('MacroSheds is missing some CAMELS variables:',
+                    paste(missing_vars, collapse = ', ')))
+    }
+    
+    ms_cmls %>% 
+        select(gauge_id = site_code, matches(colnames(cmls_d))) %>%
+        mutate(across(everything(), as.character)) %>% 
+        bind_rows(cmls_d) %>% 
+        write_delim(paste0(write_dir, '/', dataset, '.txt'), delim = ';')
+}
+
+camels_ms_merge('vege', read_dir = camels_dir, write_dir = camels_ms_dir)
+camels_ms_merge('geol', read_dir = camels_dir, write_dir = camels_ms_dir)
+camels_ms_merge('soil', read_dir = camels_dir, write_dir = camels_ms_dir)
+camels_ms_merge('clim', read_dir = camels_dir, write_dir = camels_ms_dir)
+camels_ms_merge('hydro', read_dir = camels_dir, write_dir = camels_ms_dir)
+```
+
+## Visualize again
+
+```{r camels view 2, fig.width = 14, fig.height = 14}
+
+view_attr_dists(camels_ms_dir)
+```
