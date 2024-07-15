@@ -1,9 +1,9 @@
 ############
-## Data aggregation of all stream gauge data
+## Meta-Data aggregation of all watershed data
 ##
 ## Author: Kelly A. Loria
 ## Date Created: 2024-06-26
-## Email: kellyloria@gmail.com
+## Email: kellyloria @ gmail.com
 ##
 ## ---------------------------
 #PC: setwd("R:/Users/kloria/Documents/River_Recovery_Analysis")
@@ -12,7 +12,7 @@
 metab_ts <- readRDS("./data/Metab_TS.rds")
 str(metab_ts)
 ###########
-# Download stream flow + watershed attributes from each site 
+# Download watershed attributes from each site: 
 ## ---------------------------
 library(dataRetrieval)
 library(nhdplusTools)
