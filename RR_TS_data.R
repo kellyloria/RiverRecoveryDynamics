@@ -2,7 +2,7 @@
 ## Data aggregation of all stream gauge and daily time sieries data
 ##
 ## Author: Kelly A. Loria
-## Date Created: 2024-07-09
+## Date Created: 2024-07-29
 ## Email: kellyloria @ gmail.com
 ##
 ## ---------------------------
@@ -57,7 +57,7 @@ infoCds <- pcode[grep("nitrate",
 ## --------------------------- 
 # Identify the minimum start date and maximum end date for each site
 
-site_dates <- metab_ts %>%
+site_dates <- metab_ts %>% 
   filter(!is.na(sitenumber)) %>%
   group_by(sitenumber) %>%
   summarize(start_date = min(as.Date(date), na.rm = TRUE),
@@ -73,7 +73,7 @@ for (i in 1:nrow(site_dates)) {
   siteNo <- site_dates$sitenumber[i]
   start.date <- site_dates$start_date[i]
   end.date <- site_dates$end_date[i]
-  pCode <- "00400"  # pH parameter code
+  #pCode <- "00400" # pH parameter code
   
   # Print current values for debugging
   print(paste("Processing site:", siteNo, "Start date:", start.date, "End date:", end.date))
@@ -82,7 +82,7 @@ for (i in 1:nrow(site_dates)) {
   if (!is.na(siteNo) && !is.na(start.date) && !is.na(end.date)) {
     # Download the data using readNWISuv
     site_data <- tryCatch({
-      readNWISdv(siteNumbers = siteNo, parameterCd = pCode, startDate = start.date, endDate = end.date)
+      readNWISdata(siteNumbers = siteNo, parameterCd = "00400", startDate = start.date, endDate = end.date) # readNWISdata
     }, error = function(e) {
       message(paste("download_error", siteNo, ":", e$message))
       return(NULL)
@@ -99,7 +99,7 @@ for (i in 1:nrow(site_dates)) {
 
 
 # Define standard column names
-standard_columns <- c("agency_cd", "site_no", "dateTime", "X_00400_00000", "tz_cd")
+standard_columns <- c("agency_cd", "site_no", "dateTime", "X_00400_00001", "tz_cd")
 
 # Initialize an empty list to store the standardized data frames
 standardized_data <- list()
@@ -107,7 +107,7 @@ standardized_data <- list()
 # Standardize the columns in each data frame
 for (i in seq_along(all_data)) {
   df <- all_data[[i]]
-  if (!is.null(df) && "X_00400_00000" %in% colnames(df)) { # Ensure the data frame has pH data
+  if (!is.null(df) && "X_00400_00001" %in% colnames(df)) { # Ensure the data frame has pH data
     missing_cols <- setdiff(standard_columns, colnames(df))
     df[missing_cols] <- NA  # Add missing columns with NA values
     df <- df[standard_columns]  # Reorder columns to match the standard
@@ -134,12 +134,12 @@ if (length(standardized_data) > 0) {
 # View the combined data
 print(combined_data)
 
-hist(combined_data$X_00400_00000)
+hist(combined_data$X_00400_00001)
 
 combined_data_day <- combined_data%>%
   mutate(date= as.Date(dateTime)) %>%
   group_by(site_no, date) %>%
-  summarise(pH= mean(X_00400_00000, na.rm=T))
+  summarise(pH= mean(X_00400_00001, na.rm=T))
   
 
 pH_plot <- ggplot(data = combined_data_day, aes(x = date, y = pH, color=site_no)) +
@@ -149,6 +149,9 @@ pH_plot <- ggplot(data = combined_data_day, aes(x = date, y = pH, color=site_no)
 ## rejoin metab and pH data 
  metab_ts_WQ <- metab_ts %>%
   left_join(combined_data_day, by = c("sitenumber" = "site_no", "date"))
+
+
+# saveRDS(metab_ts_WQ, "./data/pH_TS_pcode00400.rds")
 
 ## --------------------------- 
 ## turbidity pc: 63680
@@ -230,6 +233,8 @@ metab_ts_WQ1 <- metab_ts_WQ %>%
   left_join(combined_data_FNU, by = c("sitenumber" = "site_no", "date"="Date")) %>%
   rename(turbidity_FNU="X_63680_00003")
 
+# saveRDS(metab_ts_WQ1, "./data/TS_pH_FNU.rds")
+
 
 ## ---------------------------
 ## Quick visualizations: 
@@ -245,6 +250,10 @@ ER_FNU_plot <- ggplot(data = metab_ts_WQ1%>%filter(turbidity_FNU>=0), aes(y = c(
   geom_point(size=0.75, alpha=0.75) + theme_bw() +
   geom_hline(yintercept = 0, color = "gray50")
 
+pH_FNU_plot <- ggplot(data = metab_ts_WQ1%>%filter(turbidity_FNU>=0), aes(y = pH, x = log(turbidity_FNU+1), color=sitenumber), shape=as.factor(year)) +
+  geom_point(size=0.75, alpha=0.75) + theme_bw() +
+  geom_hline(yintercept = 0, color = "gray50")
+
 FNU_grid <- ggarrange(GPP_FNU_plot, 
                       ER_FNU_plot,
                      ncol = 2, nrow = 1,
@@ -255,6 +264,112 @@ FNU_grid <- ggarrange(GPP_FNU_plot,
 # ggsave(plot = FNU_grid, filename = paste("./figures/FNU_metab_TS.png",sep=""),width=9,height=7,dpi=300)
 
 
+## --------------------------- 
+# SPC data pc: 00095
+all_data <- list()
+
+# Loop through each row in site_dates
+for (i in 1:nrow(site_dates)) {
+  # Extract the site number and date range for the current row
+  siteNo <- site_dates$sitenumber[i]
+  start.date <- site_dates$start_date[i]
+  end.date <- site_dates$end_date[i]
+  #pCode <- "00400" # pH parameter code
+  
+  # Print current values for debugging
+  print(paste("Processing site:", siteNo, "Start date:", start.date, "End date:", end.date))
+  
+  # Check for NA values
+  if (!is.na(siteNo) && !is.na(start.date) && !is.na(end.date)) {
+    # Download the data using readNWISuv
+    site_data <- tryCatch({
+      readNWISdata(siteNumbers = siteNo, parameterCd = "00095", startDate = start.date, endDate = end.date) # readNWISdata
+    }, error = function(e) {
+      message(paste("download_error", siteNo, ":", e$message))
+      return(NULL)
+    })
+    
+    # Append the downloaded data to the list
+    if (!is.null(site_data)) {
+      all_data[[length(all_data) + 1]] <- site_data
+    }
+  } else {
+    message(paste("Skipping site", siteNo, "due to missing values in site number or date range"))
+  }
+}
+
+# Define standard column names
+standard_columns <- c("agency_cd", "site_no", "dateTime", "X_00095_00001", "tz_cd")
+
+# Initialize an empty list to store the standardized data frames
+standardized_data <- list()
+
+# Standardize the columns in each data frame
+for (i in seq_along(all_data)) {
+  df <- all_data[[i]]
+  if (!is.null(df) && "X_00095_00001" %in% colnames(df)) { # Ensure the data frame has pH data
+    missing_cols <- setdiff(standard_columns, colnames(df))
+    df[missing_cols] <- NA  # Add missing columns with NA values
+    df <- df[standard_columns]  # Reorder columns to match the standard
+    standardized_data[[i]] <- df
+  }
+}
+
+# Remove NULL entries from the list
+standardized_data <- Filter(Negate(is.null), standardized_data)
+
+# Combine all the standardized data frames into one data frame
+if (length(standardized_data) > 0) {
+  combined_data <- do.call(rbind, standardized_data)
+  
+  # Remove the tz_cd column if it exists
+  if ("tz_cd" %in% colnames(combined_data)) {
+    combined_data <- combined_data %>%
+      dplyr::select(-tz_cd)
+  }
+} else {
+  combined_data <- NULL
+}
+
+# View the combined data
+print(combined_data)
+
+hist(combined_data$X_00095_00001)
+
+combined_data_day <- combined_data%>%
+  mutate(date= as.Date(dateTime)) %>%
+  group_by(site_no, date) %>%
+  summarise(SPC= mean(X_00095_00001, na.rm=T))
+
+SPC_plot <- ggplot(data = combined_data_day, aes(x = date, y = SPC, color=site_no)) +
+  geom_point() + theme_bw() 
+
+## rejoin TS and SPC data 
+metab_ts_WQ2 <- metab_ts_WQ1 %>%
+  left_join(combined_data_day, by = c("sitenumber" = "site_no", "date"="date"))
+# saveRDS(metab_ts_WQ2, "./data/TS_SPC_pH_FNU.rds")
+## --------------------------- 
+
+
+# Temporary end of script. 
+
+
+
+
+
+
+
+
+
+
+
+
+## --------------------------- 
+## --------------------------- 
+## --------------------------- 
+## ...CHEM CODE GRAVE YARD...
+## --------------------------- 
+## --------------------------- 
 ## --------------------------- 
 ## Chem? nitrogen 00600 NO: 00904
 
