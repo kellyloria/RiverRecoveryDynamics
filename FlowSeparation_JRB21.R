@@ -1,7 +1,18 @@
 # start with script RR_TS_analysis.R data object: dat_ts
 str(dat_ts)
 
+dat_ts$ER_abs <- c(dat_ts$ER*-1)
+
+# List of specific site IDs to loop through
+WsID <- c("nwis_01480617", "nwis_01608500", "nwis_0165389205", "nwis_01654500",
+          "nwis_03067510", "nwis_03512000", "nwis_04087119", "nwis_04213500",
+          "nwis_05406457", "nwis_05406500", "nwis_06893970", "nwis_07075250",
+          "nwis_07075270", "nwis_07143672", "nwis_07191222", "nwis_08070200",       
+          "nwis_09406000", "nwis_385446094430700", "nwis_385520094420000","nwis_385608094380300")
+
+
 dat_tsH <- dat_ts %>%
+  filter(site_name %in% WsID)%>%
   filter(!is.na(SPC))%>%
   dplyr::select(site_name, date, SPC, temp, Q)%>%
   dplyr::rename(WatershedID=site_name, DateTime=date, SpC=SPC, Temp=temp, Q=Q)
@@ -153,9 +164,10 @@ SC.mod_AR <- function(alpha, beta, df) {
 
 
 ## visual check of outliers
-WsID <- "nwis_03183500"
-a <- storm_list[[WsID]]
-b <- comb_list[[WsID]]
+WsID
+WsT <- "nwis_01608500"
+a <- storm_list[[WsT]]
+b <- comb_list[[WsT]]
 
 plot_grid(
   ggplot(a$cc, aes(start_date, beta))+geom_point()+
@@ -172,7 +184,7 @@ plot_grid(
           axis.title.y = element_text(size=12))+
     labs(y="SpC (?S/cm)"),
   ggplot(b, aes(DateTime, Q))+geom_line(size=1, color="blue")+
-    coord_cartesian(ylim = c(0,10))+
+    coord_cartesian(ylim = c(0,100))+
     theme(axis.title.x = element_blank(), axis.text = element_text(size=12),
           axis.title.y = element_text(size=12))+
     labs(y="Q (cms)"),
@@ -180,7 +192,7 @@ plot_grid(
 )
 
 
-i <- 1 #  i = the index of a particular storm event or baseflow segment
+i <- 4 #  i = the index of a particular storm event or baseflow segment
 
 plot(a$ts_recov[[i]]$SpC,
      ylab="Specific Conductance (?S/cm)",
@@ -196,7 +208,7 @@ a$cc[i,]
 
 all.cc <- ldply(lapply(storm_list, function(x) return(x$cc)), data.frame)
 
-combined <- comb_list$nwis_05524500
+combined <- comb_list$nwis_04087119
 
 ## Visualize
 plot_grid(
@@ -206,7 +218,7 @@ plot_grid(
     labs(y="Q (cms)"),
   
   ggplot(combined, aes(DateTime, SpC))+geom_line()+
-    labs(y="SpC (?S/cm)"),
+    labs(y="SpC (uS/cm)"),
   
   ggplot(combined, aes(DateTime, base))+geom_point(),
   ncol=1,align="hv")
@@ -310,11 +322,47 @@ SPC_storm_seg <- ggplot(combined_df, aes(x = Time_Point, y = SpC, color = Site))
   geom_point(size = 1.5) +  # Observed data
   labs(x = "Time points post QF<BF", y = "SpC (µS/cm)", 
        title = "Storm segments for different sites") +
-  theme_minimal() +
+  theme_bw() +
   facet_wrap(Segment~ Site, scales = "free_y")  # Facet by site, adjust y-axis individually
 
+# ggsave(plot = SPC_storm_seg, filename = paste("./figures/SPC_storm_seg.png",sep=""),width=10,height=7.5,dpi=300)
 
 
+###
+## Visualize
+plot_grid(
+  ggplot(whole_dat, aes(DateTime, bt))+geom_line()+
+    geom_line(aes(DateTime, qft), color="red")+
+    geom_line(aes(DateTime, Q), color="blue")+
+    labs(y="Q (cms)"),
+  
+  ggplot(whole_dat, aes(DateTime, SpC))+geom_line()+
+    labs(y="SpC (uS/cm)"),
+  
+  ggplot(whole_dat, aes(DateTime, base))+geom_point(),
+  ncol=1,align="hv")
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+############
 ##
 ## FNU
 ##
@@ -333,15 +381,6 @@ FNU.mod_AR <- function(alpha, beta, df) {
 }
 
 
-
-# List of specific site IDs to loop through
-WsID <- c("nwis_01480617", "nwis_01608500", "nwis_0165389205", "nwis_01654500",
-          "nwis_03067510", "nwis_03512000", "nwis_04087119", "nwis_04213500",
-          "nwis_05406457", "nwis_05406500", "nwis_06893970", "nwis_07075250",
-          "nwis_07075270", "nwis_07143672", "nwis_07191222", "nwis_08070200",       
-          "nwis_09406000", "nwis_385446094430700", "nwis_385520094420000","nwis_385608094380300")
-
-##
 ##
 ##
 
