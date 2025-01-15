@@ -52,12 +52,11 @@ USGSnumber<- unique(dat_ts$USGSnumber)
 Info <- readNWISsite(site_no) %>%
   select(agency_cd, site_no, station_nm, huc_cd, dec_lat_va, dec_long_va, alt_va, drain_area_va)
 hist(Info$drain_area_va)
-hist(Infoq$drain_area_va)
 
 Infoq<- Info%>%
   select(site_no, drain_area_va) %>%
   mutate(drain_area_va = c(2.58999*drain_area_va))
-
+hist(Infoq$drain_area_va)
 
 dat_ts <- dat_ts%>%
   left_join(Infoq, by = c("site_no")) %>%
@@ -256,8 +255,6 @@ dat_tsq<- dat_ts1%>% filter(GPP>0 & ER<0 &!order_group=="unknown")
 
 
 # start with general glms of GPP and ER to pH FNU and spc 
-
-
 chart.Correlation(dat_tsq[c(3,33,35,36,39)])
 hist(dat_tsq$GPP)
 hist(log(dat_tsq$GPP+1))
