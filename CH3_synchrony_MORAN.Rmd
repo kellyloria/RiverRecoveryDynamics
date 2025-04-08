@@ -1,0 +1,1863 @@
+---
+title: 'Moran effect explorations for stream metab and lake metab synchrony analysis'
+author: "Kelly Loria"
+date: "`r Sys.Date()`"
+output:
+   html_document:
+    theme: simplex
+    highlight: tango
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+```{=html}
+<style type="text/css">
+body, td {font-size: 13px;}
+code.r{font-size: 9px;}
+pre {font-size: 11px}
+</style>
+```
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(warning = F, message = F)
+knitr::opts_knit$set(root.dir = '/Users/kellyloria/Documents/')
+def.chunk.hook  <- knitr::knit_hooks$get("chunk")
+knitr::knit_hooks$set(chunk = function(x, options) {
+  x <- def.chunk.hook(x, options)
+  ifelse(options$size != "normalsize", paste0("\n \\", options$size,"\n\n", x, "\n\n \\normalsize"), x)
+})
+
+```
+
+```{r, echo = F, message = F, include=FALSE}
+### Packages
+# setwd("/Users/kellyloria/Documents/River_Recovery_Dynamics_Analysis")
+
+lapply(c("plyr","dplyr","ggplot2","cowplot",
+         "lubridate","tidyverse", "reshape2", "ggpubr", "ggpattern", "broom.mixed",
+         "glmmTMB", "plotly", "MASS", "EnvStats",
+         "lme4", "lmerTest", "MuMIn", "PerformanceAnalytics", "car"), require, character.only=T)
+
+```
+
+
+### REad in PRISM climate data
+```{r, warning=F, size = 'small', echo=FALSE, include=FALSE}
+library(dplyr)
+library(readr)
+
+# Define the folder path
+folder_path <- "/Users/kellyloria/Documents/River_Recovery_Dynamics_Analysis/data/Clim_data/PRISM_data"
+
+# List all .csv files in the folder
+file_list <- list.files(folder_path, pattern = "\\.csv$", full.names = TRUE)
+
+# Read in all CSV files and combine them into one dataframe
+PRISM_data <- file_list %>%
+  lapply(function(file) read_csv(file, skip = 10)) %>%
+  bind_rows() %>%
+  rename(
+    ppt_mm = `ppt (mm)`,
+    TminC = `tmin (degrees C)`,
+    TmaxC = `tmax (degrees C)`,
+    TmeanC = `tmean (degrees C)`
+  )
+# View the first few rows
+head(PRISM_data)
+str(PRISM_data)
+
+
+unique(PRISM_data$Name)
+
+
+
+summary(PRISM_data)
+
+```
+
+```{r, warning=F, size = 'small', echo=FALSE, include=FALSE}
+
+ppt_trends <- PRISM_data %>%
+  ggplot(aes(y = ppt_mm, x = Date, color = Latitude)) +
+  geom_line(linewidth=1) + theme_classic() #+ ylab(expression(Accumulated~flow~(m^3~km^-1~d^-1))) + xlab(NULL) 
+
+ppt_trends
+
+
+temp_trends <- PRISM_data %>%
+  ggplot(aes(y = TmeanC, x = Date, color = Latitude)) +
+  geom_line(linewidth=1) + theme_classic() #+ ylab(expression(Accumulated~flow~(m^3~km^-1~d^-1))) + xlab(NULL) 
+
+temp_trends
+
+
+```
+
+```{r, warning=F, size = 'small', echo=FALSE, include=FALSE}
+### Marzolf workflow parameters 
+# define constants and axis labels
+metab_units_area <- (expression(paste('GPP (g C', m^-2,' ',y^-1,')', sep = ' ')))
+
+low_p <- '#103801'
+high_p <- '#43fa00'
+
+# quotient to convert GPP from O2 to C
+# g C = g O2 * (1 mol O2/32 g O2) * (2 mol O/1 mol O2) * (1 mol C/1 mol O) * (12 g C/1 mol 
+
+rq <- (1/32)*(2/1)*(1/1)*(12/1)
+
+## check this to see what a better assumption would be ?
+rq_e <- 1
+
+# where to save figures
+save_figs <- TRUE
+dpi <- 400
+
+```
+
+```{r, warning=F, size = 'small', echo=FALSE, include=FALSE}
+## Read in data 
+
+metab_ts <- readRDS("/Users/kellyloria/Documents/River_Recovery_Dynamics_Analysis/data/Metab_TS.rds")
+# str(metab_ts)
+
+dat_ts <- readRDS("/Users/kellyloria/Documents/River_Recovery_Dynamics_Analysis/data/TS_SPC_pH_FNU.rds")
+# str(dat_ts)
+# summary(dat_ts)
+# unique(dat_ts$site_name)
+
+metab_meta_dat <- readRDS("/Users/kellyloria/Documents/River_Recovery_Dynamics_Analysis/data/Metab_metadata.rds")
+# str(metab_ts)
+
+
+marz_dat <- read.csv("/Users/kellyloria/Documents/River_Recovery_Dynamics_Analysis/data/doi_10_5061_dryad_bcc2fqzj2__v20230622/data_citation/1_site_info.csv")
+# 63 different sites 
+
+Ladwig_NTL_dat_metadf <- read.csv("/Users/kellyloria/Documents/River_Recovery_Dynamics_Analysis/data/Lakes_dat/knb-lter-ntl.402.2/Ladwig_NTL_lake_cords.csv")%>%
+  dplyr::select(Site.Number, Latitude, Longitude) %>%
+  mutate(source="ladwig_NTL_lake")
+
+Oleksy_dat_metadf <- read.csv("/Users/kellyloria/Documents/River_Recovery_Dynamics_Analysis/data/Lakes_dat/edi.1541.2/lake_descriptions.csv")%>%
+  dplyr::select(Site.Number ="lakeName", Latitude="lat_dd", Longitude="long_dd") %>%
+  mutate(source="oleksy_lake")
+
+Rabaey_dat_metadf <- read.csv("/Users/kellyloria/Documents/River_Recovery_Dynamics_Analysis/data/Lakes_dat/edi.1531.2/metadata.csv")%>%
+  dplyr::select(Site.Number ="pond_name", Latitude="latitude", Longitude="longitude") %>%
+  mutate(source="rabaey_lake")
+
+corman_dat_metadf <- read.csv("/Users/kellyloria/Documents/River_Recovery_Dynamics_Analysis/data/Lakes_dat/load_metab_results/corman_lake_cords.csv")%>%
+  filter(country=="United States" | country== "Canada") %>%
+  dplyr::select(Site.Number ="Lake", Latitude="Latitude", Longitude="Longitude") %>%
+  mutate(source="corman_lake")
+
+lotting_dat_metadf <- read.csv("/Users/kellyloria/Documents/River_Recovery_Dynamics_Analysis/data/Lakes_dat/Facundo_Rec/knb-lter-ntl.397.1/Lotting_lake_cords.csv")%>%
+  dplyr::select(Site.Number ="Lake", Latitude="Latitude", Longitude="Longitude") %>%
+  mutate(source="lotting_lake")
+
+
+```
+
+
+```{r, warning=F, size = 'small', echo=F, include=F}
+
+dat_ts_clean <- dat_ts%>%
+  filter(GPP.Rhat < 1.05 &  GPP >0 & ER <0)
+
+# unique(dat_ts_clean$long_name)
+
+marz_dat_names <- marz_dat%>%
+  dplyr::select(Site.Number, Latitude, Longitude) %>%
+  mutate(source="marzolf_stream")
+
+dat_ts_names <-metab_meta_dat %>%
+   dplyr::select(Site.Number = "site_no", Latitude = "dec_lat_va", Longitude= "dec_long_va") %>%
+  mutate(source="appling_stream")
+
+## quick site check
+site_check <- rbind(marz_dat_names, 
+                  #  dat_ts_names,
+                    Ladwig_NTL_dat_metadf, 
+                    Oleksy_dat_metadf,
+                    Rabaey_dat_metadf, 
+                    #corman_dat_metadf, 
+                    lotting_dat_metadf)
+
+#
+
+# write.csv(site_check, "/Users/kellyloria/Documents/River_Recovery_Dynamics_Analysis/data/RR_site_cords.csv")
+
+
+```
+
+
+#### Load Marzolf GPP data:
+
+```{r, warning=F, size = 'small', echo=T, include=T}
+river_metab <- readr::read_csv('/Users/kellyloria/Documents/River_Recovery_Dynamics_Analysis/data/doi_10_5061_dryad_bcc2fqzj2__v20230622/data_citation/5_usgs_metabolism.csv')
+
+head(river_metab)
+```
+
+#### Gap fill
+
+'fill_and_normalize_metab.R' is a modified function
+from'code/metabolism_synthesis/Part II- Filtering and gap filling.Rmd
+uses the function fillMiss3.R
+
+**Make sure** to double check the 'summary_site-year_NAs.csv' save path
+in the fxn
+
+-   Extracts unique sites and years from the input data.
+
+-   Tracks missing data for each site-year.
+
+-   Pads the dataset to ensure a full-year time series.
+
+-   Identifies missing data patterns and determines if a year is
+    complete.
+
+-   Applies a gap-filling algorithm (if \<40% of data is missing).
+
+-   Outputs a cleaned and gap-filled dataset for further analysis.
+
+
+
+```{r, warning=F, size = 'small', echo=F, include=T}
+source('/Users/kellyloria/Documents/River_Recovery_Dynamics_Analysis/data/doi_10_5061_dryad_bcc2fqzj2__v20230622/code_fxns/fill_and_normalize_metab.R')
+
+```
+
+```{r, warning=F, size = 'small', echo=T, include=T}
+river_metab_filled <- fill_and_normalize_metab(river_metab)
+head(river_metab_filled)
+```
+
+##### Check the scope of the infill
+
+```{r, warning=F, size = 'small', echo=T, include=T}
+n_obs_gpp <- length(river_metab_filled$GPP_filled)
+n_obs_gpp
+
+n_sites <- length(unique(river_metab_filled %>%
+                           dplyr::filter(!is.na(site)) %>%
+                           dplyr::pull(site)))
+n_sites
+```
+
+```{r, warning=F, size = 'small', echo=T, include=T}
+source('/Users/kellyloria/Documents/River_Recovery_Dynamics_Analysis/data/doi_10_5061_dryad_bcc2fqzj2__v20230622/code_fxns/fill_and_normalize_metab_KAL.R')
+
+river_metab_filled_ER <- fill_and_normalize_metab(river_metab)
+head(river_metab_filled_ER)
+```
+
+```{r, warning=F, size = 'small', echo=T, include=T}
+
+n_obs_er <- length(river_metab_filled_ER$ER_filled)
+n_obs_er
+
+n_sites <- length(unique(river_metab_filled_ER %>%
+                           dplyr::filter(!is.na(site)) %>%
+                           dplyr::pull(site)))
+n_sites
+```
+
+### Calculate cumulative daily GPP and total annual GPP to get a variance dynamics:
+
+```{r, warning=F, size = 'small', echo=F, include=F}
+table_s1 <- readr::read_csv("/Users/kellyloria/Documents/River_Recovery_Dynamics_Analysis/data/doi_10_5061_dryad_bcc2fqzj2__v20230622/data_citation/1_site_info.csv")
+```
+
+```{r, warning=F, size = 'small', echo=F, include=F}
+# calculate site-year cumulative GPP
+river_metab_cumsum <- river_metab_filled %>%
+  dplyr::mutate(year = lubridate::year(date)) %>%
+  dplyr::group_by(site, year) %>%
+  dplyr::mutate(jday = lubridate::yday(date),
+                GPP_C = GPP_filled*rq,
+                GPP_C_clean = replace(GPP_C, GPP_C < 0, 0), # replace negative values with 0 in GPP_C_cumsum
+                GPP_C_cumsum = cumsum(GPP_C_clean))
+
+
+# calculate annual GPP for each site-year
+metab_all_annual <- river_metab_cumsum %>%
+#dplyr::mutate(year = lubridate::year(date)) %>%
+  dplyr::group_by(site, year) %>%
+  dplyr::summarise(GPP_daily_mean = mean(GPP_C_clean, na.rm = TRUE),
+                   GPP_ann_sum = sum(GPP_C_clean, na.rm = TRUE),
+                   GPP_daily_cv = EnvStats::cv(GPP_C_clean, na.rm = TRUE, method = 'l.moments')*100,
+                   Q_daily_mean = mean(discharge, na.rm = TRUE),
+                   Q_daily_cv = EnvStats::cv(discharge, na.rm = TRUE, method = 'l.moments')*100,
+                   temp_daily_mean = mean(temp.water, na.rm = TRUE),
+                   temp_daily_cv = EnvStats::cv(temp.water,na.rm = TRUE, method = 'l.moments')*100) %>%
+  dplyr::mutate(clean_site_num = as.numeric(substr(site, 6,30))) %>%
+  dplyr::left_join(table_s1 %>%
+                     rename(clean_site_num =`Site Number`,
+                            clean_name =`Name`) ,
+                   'clean_site_num')
+```
+
+```{r, warning=F, size = 'small', echo=T, include=F}
+##### Calculate median annual and CV for each site time series
+
+site_mean_ann_gpp <- metab_all_annual %>%
+  dplyr::group_by(site, clean_name) %>%
+  dplyr::summarise(median_ann_GPP = median(GPP_ann_sum, na.rm = TRUE),
+                   sd_ann_GPP = sd(GPP_ann_sum, na.rm = TRUE),
+                   min_ann_GPP = min(GPP_ann_sum, na.rm = TRUE),
+                   max_ann_GPP = max(GPP_ann_sum, na.rm = TRUE),
+                   GPP_percent_diff = ((max_ann_GPP- min_ann_GPP)/min_ann_GPP)*100,
+                   GPP_ann_cv = EnvStats::cv(GPP_ann_sum, na.rm = TRUE, method = 'l.moments')*100,
+                   mean_ann_temp = mean(temp_daily_mean, na.rm = TRUE),
+                   mean_sd_temp = sd(temp_daily_mean, na.rm = TRUE),
+                   cv_mean_temp = EnvStats::cv(temp_daily_mean, method = 'l.moments')*100,
+                   median_ann_discharge = median(Q_daily_mean, na.rm = TRUE),
+                   median_sd_discharge = sd(Q_daily_mean, na.rm = TRUE),
+                   cv_median_discharge = EnvStats::cv(Q_daily_mean, na.rm = TRUE, method ='l.moments')*100
+                   ) %>%
+  dplyr::arrange(desc(max_ann_GPP)) %>%
+  dplyr::mutate(clean_site_num = as.numeric(substr(site, 6,30))) %>%
+  dplyr::left_join(table_s1 %>%
+                     rename(clean_site_num =`Site Number`),'clean_site_num')
+
+head(site_mean_ann_gpp)
+
+```
+
+##### Cumulative site-year GPP as Fig 1 in the paper
+
+```{r, warning=F, size = 'small', echo=F, include=T, fig.width=10, fig.height=6}
+
+river_metab_cumsum_names <- river_metab_cumsum %>%
+  dplyr::mutate(clean_site_num = as.numeric(substr(site, 6,30))) %>%
+  dplyr::left_join(table_s1 %>%
+                     rename(clean_site_num =`Site Number`) ,'clean_site_num') %>%
+  dplyr::rename(clean_name =`Name`)
+
+river_metab_cumsum_names$clean_name <-
+  suppressWarnings(forcats::fct_relevel(river_metab_cumsum_names$clean_name,site_mean_ann_gpp %>%
+                                          dplyr::pull(clean_name)))
+
+y_axis_title <- bquote(Cumulative~ .(metab_units_area))
+# subset of 9 sites to show as figure 1 (for size/space concerns)
+highest_4 <- site_mean_ann_gpp %>%
+  arrange(desc(median_ann_GPP)) %>%
+  head(., n = 4) %>%
+  dplyr::pull(site)
+
+lowest_4 <- site_mean_ann_gpp %>%
+  arrange(median_ann_GPP) %>%
+  head(., n = 4) %>%
+  dplyr::pull(site)
+
+extremes <- c(lowest_4, highest_4)
+
+fig_1 <- ggplot(data = river_metab_cumsum_names %>%
+                  dplyr::filter(site %in% extremes),
+                aes(x = jday, y = GPP_C_cumsum,
+                    group = interaction(year, site),
+                    color = GPP_C_cumsum))+
+  geom_line(show.legend = FALSE) +
+  facet_wrap(forcats::fct_relevel(clean_name,
+                                  site_mean_ann_gpp %>%
+                                    dplyr::filter(site %in% extremes) %>%
+                                    dplyr::pull(clean_name))~., scales = 'free_y',
+             ncol = 4) +
+  scale_color_gradient(low = low_p, high = high_p) +
+  scale_y_continuous(breaks = function(y) {
+    max_value <- max(y, na.rm = TRUE)*0.9
+    tick_marks <- seq(0, round(max_value, digits =-1), length.out = 3)
+    return(tick_marks)
+  }
+  ) +
+  labs(x = 'Day of Year',
+       y = expression(paste('Cumulative GPP (g C', m^-2, '', y^-1,')'))) +
+       theme(strip.text = element_text(size = 7),
+             strip.background = element_rect(fill = 'white')) +
+  theme_classic()
+
+fig_1
+```
+
+#### Same thing but for cummulative ER?
+
+```{r, warning=F, size = 'small', echo=F, include=F}
+# calculate site-year cumulative ER
+river_metab_cumsum_ER <- river_metab_filled_ER %>%
+  dplyr::mutate(year = lubridate::year(date)) %>%
+  dplyr::group_by(site, year) %>%
+  dplyr::mutate(jday = lubridate::yday(date),
+                ER_C = (ER_filled*-1) * rq_e, # absolute value of ER
+                ER_C_clean = replace(ER_C, ER_C < 0, 0), # replace negative values with 0 in ER_C_cumsum
+                ER_C_cumsum = cumsum(ER_C_clean))
+
+
+# calculate annual ER for each site-year
+metab_all_annual_er <- river_metab_cumsum_ER %>%
+#dplyr::mutate(year = lubridate::year(date)) %>%
+  dplyr::group_by(site, year) %>%
+  dplyr::summarise(ER_daily_mean = mean(ER_C_clean, na.rm = TRUE),
+                   ER_ann_sum = sum(ER_C_clean, na.rm = TRUE),
+                   ER_daily_cv = EnvStats::cv(ER_C_clean, na.rm = TRUE, method = 'l.moments')*100,
+                   Q_daily_mean = mean(discharge, na.rm = TRUE),
+                   Q_daily_cv = EnvStats::cv(discharge, na.rm = TRUE, method = 'l.moments')*100,
+                   temp_daily_mean = mean(temp.water, na.rm = TRUE),
+                   temp_daily_cv = EnvStats::cv(temp.water,na.rm = TRUE, method = 'l.moments')*100) %>%
+  dplyr::mutate(clean_site_num = as.numeric(substr(site, 6,30))) %>%
+  dplyr::left_join(table_s1 %>%
+                     rename(clean_site_num =`Site Number`,
+                            clean_name =`Name`) ,
+                   'clean_site_num')
+```
+
+```{r, warning=F, size = 'small', echo=F, include=F}
+##### Calculate median annual and CV for each site time series
+
+site_mean_ann_er <- metab_all_annual_er %>%
+  dplyr::group_by(site, clean_name) %>%
+  dplyr::summarise(median_ann_ER = median(ER_ann_sum, na.rm = TRUE),
+                   sd_ann_ER = sd(ER_ann_sum, na.rm = TRUE),
+                   min_ann_ER = min(ER_ann_sum, na.rm = TRUE),
+                   max_ann_ER = max(ER_ann_sum, na.rm = TRUE),
+                   ER_percent_diff = ((max_ann_ER- min_ann_ER)/min_ann_ER)*100,
+                   ER_ann_cv = EnvStats::cv(ER_ann_sum, na.rm = TRUE, method = 'l.moments')*100,
+                   mean_ann_temp = mean(temp_daily_mean, na.rm = TRUE),
+                   mean_sd_temp = sd(temp_daily_mean, na.rm = TRUE),
+                   cv_mean_temp = EnvStats::cv(temp_daily_mean, method = 'l.moments')*100,
+                   median_ann_discharge = median(Q_daily_mean, na.rm = TRUE),
+                   median_sd_discharge = sd(Q_daily_mean, na.rm = TRUE),
+                   cv_median_discharge = EnvStats::cv(Q_daily_mean, na.rm = TRUE, method ='l.moments')*100
+                   ) %>%
+  dplyr::arrange(desc(max_ann_ER)) %>%
+  dplyr::mutate(clean_site_num = as.numeric(substr(site, 6,30))) %>%
+  dplyr::left_join(table_s1 %>%
+                     rename(clean_site_num =`Site Number`),'clean_site_num')
+
+```
+
+##### Cumulative site-year \|ER\| modfied from Fig 1 in the paper
+
+```{r, warning=F, size = 'small', echo=F, include=T, fig.width=10, fig.height=6}
+
+river_metab_cumsum_names_ER <- river_metab_cumsum_ER %>%
+  dplyr::mutate(clean_site_num = as.numeric(substr(site, 6,30))) %>%
+  dplyr::left_join(table_s1 %>%
+                     rename(clean_site_num =`Site Number`) ,'clean_site_num') %>%
+  dplyr::rename(clean_name =`Name`)
+
+river_metab_cumsum_names_ER$clean_name <-
+  suppressWarnings(forcats::fct_relevel(river_metab_cumsum_names_ER$clean_name,site_mean_ann_er %>%
+                                          dplyr::pull(clean_name)))
+
+y_axis_title <- bquote(Cumulative~ .(metab_units_area))
+# subset of 9 sites to show as figure 1 (for size/space concerns)
+highest_4 <- site_mean_ann_er %>%
+  arrange(desc(median_ann_ER)) %>%
+  head(., n = 4) %>%
+  dplyr::pull(site)
+
+lowest_4 <- site_mean_ann_er %>%
+  arrange(median_ann_ER) %>%
+  head(., n = 4) %>%
+  dplyr::pull(site)
+
+extremes <- c(lowest_4, highest_4)
+
+fig_1er <- ggplot(data = river_metab_cumsum_names_ER %>%
+                  dplyr::filter(site %in% extremes),
+                aes(x = jday, y = ER_C_cumsum,
+                    group = interaction(year, site),
+                    color = ER_C_cumsum))+
+  geom_line(show.legend = FALSE) +
+  facet_wrap(forcats::fct_relevel(clean_name,
+                                  site_mean_ann_er %>%
+                                    dplyr::filter(site %in% extremes) %>%
+                                    dplyr::pull(clean_name))~., scales = 'free_y',
+             ncol = 4) +
+  scale_color_gradient(low = low_p, high = high_p) +
+  scale_y_continuous(breaks = function(y) {
+    max_value <- max(y, na.rm = TRUE)*0.9
+    tick_marks <- seq(0, round(max_value, digits =-1), length.out = 3)
+    return(tick_marks)
+  }
+  ) +
+  labs(x = 'Day of Year',
+       y = expression(paste('Cumulative |ER| (g C', m^-2, '', y^-1,')'))) +
+       theme(strip.text = element_text(size = 7),
+             strip.background = element_rect(fill = 'white')) +
+  theme_classic()
+
+fig_1er
+```
+
+##### When are rivers productive?
+
+Where - Marzolf et al - identifies when cumulative GPP (a measure of
+ecosystem productivity) reaches specific percentiles (25%, 50%, 75%, and
+95%) for each site and year
+
+```{r, warning=F, size = 'small', echo=T, include=T}
+df_out <- data.frame(
+  site = rep(rep(unique(river_metab_cumsum_names$site), each = 14),times = 4),
+  year = rep(rep(unique(river_metab_cumsum_names$year), times = 59),each = 4),
+  quantile = rep(c(0.25, 0.5, 0.75, 0.95), times = 14*59))
+
+for(i in 1:nrow(df_out)){
+  deets <- df_out[i,]
+  site <- deets[,'site']
+  year <- deets[,'year']
+  quantile <- deets[,'quantile']
+  
+  df_use <- river_metab_cumsum_names %>%
+    dplyr::filter(site %in% !!site,
+                  year %in% !!year)
+  if(nrow(df_use)== 0)
+    next
+# Calculate the Maximum Cumulative GPP (GPP_C_cumsum) for the Year:
+  cumsum <- max(df_use$GPP_C_cumsum, na.rm = TRUE)
+  df_out[i,'GPP_C_cumsum'] <- cumsum
+
+# Normalize the Cumulative GPP to Create a CDF (Cumulative Distribution Function):
+  df_math <- df_use %>%
+    dplyr::mutate(GPP_C_cumsum_cdf = GPP_C_cumsum/cumsum)
+  
+# Find the Julian Day (jday) When the GPP Reaches the Specified Quantile:
+  jday <- which.min(abs(df_math$GPP_C_cumsum_cdf- quantile))
+  df_out[i,'jday'] <- jday
+  
+  # Extract Corresponding Data for That jday:
+  row <- data.frame(df_math %>%
+                      dplyr::filter(jday== !!jday))
+  df_out[i,'clean_name'] <- row[,'clean_name']
+  df_out[i,'date'] <- row[,'date']
+  df_out[i,'GPP_C_cumsum'] <- row[,'GPP_C_cumsum']
+  df_out[i,'cdf'] <- row[,'GPP_C_cumsum_cdf']
+  } # end for loop
+
+# Filter and Fill Missing Data (df_quants):
+df_quants <- df_out %>%
+  dplyr::filter(!is.na(jday)) %>%
+  dplyr::group_by(site) %>%
+  tidyr::fill(clean_name, .direction = 'down')
+
+df_quants %>%
+  dplyr::group_by(quantile) %>%
+  dplyr::summarise(jday_median = median(jday, na.rm = TRUE),
+                   jday_sd = sd(jday, na.rm = TRUE),
+                   jday_min = min(jday, na.rm = TRUE),
+                   jday_max = max(jday, na.rm = TRUE))
+```
+
+```{r, warning=F, size = 'small', echo=T, include=T}
+df_quants %>%
+  dplyr::group_by(quantile, clean_name) %>%
+  dplyr::summarise(jday_median = median(jday, na.rm = TRUE),
+                   jday_sd = sd(jday, na.rm = TRUE),
+                   jday_min = min(jday, na.rm = TRUE),
+                   jday_max = max(jday, na.rm = TRUE))
+
+```
+
+#### Trend analysis:
+
+trend analysis on quantiles of cumulative gross primary production
+(GPP_C_cumsum) over time, using Sen's slope and the Mann-Kendall test to
+determine the direction and significance of trends in the Julian day
+(jday) at which specific cumulative GPP quantiles are reached.
+
+```{r, warning=F, size = 'small', echo=T, include=T}
+# trend analysis for quantiles
+quantile_trends <- df_quants %>%
+  dplyr::arrange(site, year) %>%
+  dplyr::group_by(site, quantile) %>%
+  tidyr::nest() %>%
+  # Performing Sen's Slope and Mann-Kendall Trend Tests
+  dplyr::mutate(sens = purrr::map(data, ~trend::sens.slope(x = .$jday)),
+                mk_test = purrr::map(data, ~trend::mk.test(x = .$jday))) %>%
+  # Extracting Trend Statistics
+  dplyr::mutate(sens_s = purrr::map_dbl(sens,~.$estimates), 
+                sens_p = purrr::map(sens,~.$p.value),
+                mk_p = purrr::map_dbl(mk_test,~.$p.value),
+                # mk_t = purrr::map_dbl(mk_test, ~.$estimates['tau']),
+                sens_sig = ifelse(sens_p <= 0.05, 'significant', 'non-significant'),
+                sens_slope = ifelse(sens_s > 0, 'increasing',  'decreasing'),
+                mk_sig = ifelse(mk_p <= 0.05, 'significant', 'non-significant')
+                )
+
+quantile_sum_sigs <- quantile_trends %>%
+  dplyr::ungroup() %>%
+  dplyr::select(quantile, site, mk_p, #mk_t,
+                mk_sig, #mk_slope,
+                sens_s, sens_sig, sens_slope)
+
+quants_n_sig <- quantile_sum_sigs %>%
+  dplyr::filter(mk_p <= 0.05) %>%
+  dplyr::group_by(quantile, sens_slope) %>%
+  summarise(n = n()) %>%
+  data.frame()
+
+quantile_trends_sum <- df_quants %>%
+  dplyr::left_join(quantile_sum_sigs) %>%
+  dplyr::mutate(sens_meaning = dplyr::case_when(sens_slope== 'increasing' ~ 'Later',
+                                                sens_slope== 'decreasing' ~ 'Earlier'),
+# mk_meaning = case_when(mk_slope =='increasing' ~ 'Later',
+# mk_slope =='decreasing' ~ 'Earlier'),
+)
+
+
+```
+
+**sens.slope**: Sen’s slope (sens.slope) estimates the trend in jday
+over time (whether the day at which a given quantile is reached is
+shifting earlier or later).
+
+**mk.test**: Mann-Kendall test (mk.test) assesses whether there is a
+statistically significant trend in jday over time.
+
+#### Visualize the when productivity is highest
+
+```{r, warning=F, size = 'small', echo=F, include=T, fig.width=10, fig.height=6}
+library(gghighlight)
+
+quantile_trenders <- quantile_trends_sum %>%
+  dplyr::filter(mk_p <= 0.05) %>%
+  dplyr::group_by(quantile, clean_name) %>%
+  dplyr::filter(row_number()== 1)
+
+fig_3 <- ggplot(quantile_trends_sum, aes(x = year, y = jday, group = site, color = sens_meaning))+
+  geom_line(linewidth = 0.8)+
+  gghighlight::gghighlight(mk_sig== 'significant',
+                           use_direct_label = FALSE, keep_scales = TRUE,
+                           unhighlighted_params = list(alpha("grey10", 0.4),
+                                                       linewidth = 0.4),
+                           calculate_per_facet = TRUE)+
+  facet_wrap(.~ quantile, scales = 'free_y', nrow = 2, ncol = 2)+
+#scale_y_continuous(limits = c(0, 366))+
+  scale_color_manual(name = element_blank(), values = c(high_p, low_p))+ 
+  labs(x = 'Year', y = 'Day of Year')+
+  theme(legend.title = element_blank()) + theme_bw()
+
+fig_3
+
+```
+
+
+## NEW STUFF:
+
+```{r, warning=F, size = 'small', echo=T, include=T}
+
+# Assuming 'data' has 'Year', 'Month', and 'GPP_filled'
+data_intra_annual_mon <- river_metab_filled %>%
+  mutate(month=month(date))%>%
+  group_by(site, year, month) %>%
+  summarise(
+    monthly_avg_GPP = mean(GPP_filled, na.rm = TRUE),
+    monthly_cv_GPP = sd(GPP_filled, na.rm = TRUE) / mean(GPP_filled, na.rm = TRUE) * 100
+  ) %>%
+  ungroup()
+
+# Summarize intra-annual CV for each year
+data_intra_annual_yr <- data_intra_annual_mon %>%
+  group_by(site,year) %>%
+  summarise(
+    mu_intra_annual = mean(monthly_avg_GPP, na.rm = TRUE),
+    cv_intra_annual = sd(monthly_avg_GPP, na.rm = TRUE) / mean(monthly_avg_GPP, na.rm = TRUE) * 100
+  )
+
+# Summarize intra-annual CV for each year
+data_intra_annual_overall <- data_intra_annual_mon %>%
+  group_by(site) %>%
+  summarise(
+    mu_intra_annual = mean(monthly_avg_GPP, na.rm = TRUE),
+    cv_intra_annual = sd(monthly_avg_GPP, na.rm = TRUE) / mean(monthly_avg_GPP, na.rm = TRUE) * 100
+  )
+```
+
+```{r, warning=F, size = 'small', echo=F, include=F}
+
+# Assuming 'data' has 'Year', 'Month', and 'GPP_filled'
+data_intra_annual_mon_er <- river_metab_filled_ER %>%
+  mutate(month=month(date))%>%
+  group_by(site, year, month) %>%
+  summarise(
+    monthly_avg_ER = mean(ER_filled, na.rm = TRUE),
+    monthly_cv_ER = sd(ER_filled, na.rm = TRUE) / mean(ER_filled, na.rm = TRUE) * 100
+  ) %>%
+  ungroup()
+
+# Summarize intra-annual CV for each year
+data_intra_annual_yr_er <- data_intra_annual_mon_er %>%
+  group_by(site,year) %>%
+  summarise(
+    mu_intra_annual = mean(monthly_avg_ER, na.rm = TRUE),
+    cv_intra_annual = sd(monthly_avg_ER, na.rm = TRUE) / mean(monthly_avg_ER, na.rm = TRUE) * 100
+  )
+
+# Summarize intra-annual CV for each year
+data_intra_annual_overall_er <- data_intra_annual_mon_er %>%
+  group_by(site) %>%
+  summarise(
+    mu_intra_annual = mean(monthly_avg_ER, na.rm = TRUE),
+    cv_intra_annual = sd(monthly_avg_ER, na.rm = TRUE) / mean(monthly_avg_ER, na.rm = TRUE) * 100
+  )
+```
+
+#### Mean GPP by site per year
+
+```{r, warning=F, size = 'small', echo=F, include=T, fig.width=16, fig.height=14}
+# Create the plot
+ggplot(data_intra_annual_yr, aes(x = year, y = mu_intra_annual, color = mu_intra_annual, group = site)) +
+  geom_line() +  
+  geom_point() +  
+  facet_wrap(~site, scales = 'free_y') +  #  scales = 'free_y'
+  theme_minimal() +  
+  labs(
+    title = "Average annual GPP by stream site",
+    x = "Year",
+    y = "GPP"
+  ) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),  # Rotate x-axis labels for better readability
+    panel.grid.major = element_line(size = 0.5, color = "gray", linetype = "dashed"),
+    panel.grid.minor = element_blank()  # Remove minor grid lines
+  ) +
+#  theme(legend.position = "none")+
+  scale_color_viridis_c(name="GPP")  
+```
+
+#### Mean ER by site per year
+
+```{r, warning=F, size = 'small', echo=F, include=T, fig.width=16, fig.height=14}
+# Create the plot
+ggplot(data_intra_annual_yr_er, aes(x = year, y = mu_intra_annual, color = mu_intra_annual, group = site)) +
+  geom_line() +  
+  geom_point() +  
+  facet_wrap(~site, scales = 'free_y') +  #  scales = 'free_y'
+  theme_minimal() +  
+  labs(
+    title = "Average annual ER by stream site",
+    x = "Year",
+    y = "ER"
+  ) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),  # Rotate x-axis labels for better readability
+    panel.grid.major = element_line(size = 0.5, color = "gray", linetype = "dashed"),
+    panel.grid.minor = element_blank()  # Remove minor grid lines
+  ) +
+#  theme(legend.position = "none")+
+  scale_color_viridis_c(name="GPP")  
+```
+
+#### CV in GPP by site per year
+
+CV as sd()/mean() \*100
+
+```{r, warning=F, size = 'small', echo=F, include=T, fig.width=16, fig.height=14}
+ggplot(data_intra_annual_yr, aes(x = year, y = cv_intra_annual, color = mu_intra_annual, group = site)) +
+  geom_line() +  
+  geom_point() +  
+  facet_wrap(~site) +
+  theme_minimal() +  
+  labs(
+    title = "Degree of CV in GPP each year stream site",
+    x = "Year",
+    y = "CV of GPP"
+  ) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),  # Rotate x-axis labels for better readability
+    panel.grid.major = element_line(size = 0.5, color = "gray", linetype = "dashed"),
+    panel.grid.minor = element_blank()  # Remove minor grid lines
+  ) +
+  theme(legend.position = "none")+
+  scale_color_viridis_c(name="GPP")  
+```
+
+#### CV in ER by site per year
+
+```{r, warning=F, size = 'small', echo=F, include=T, fig.width=16, fig.height=14}
+ggplot(data_intra_annual_yr_er%>%filter(cv_intra_annual>-1940), aes(x = year, y = cv_intra_annual, color = mu_intra_annual, group = site)) +
+  geom_line() +  
+  geom_point() +  
+  facet_wrap(~site) +
+  theme_minimal() +  
+  labs(
+    title = "Degree of CV in GPP each year stream site",
+    x = "Year",
+    y = "CV of GPP"
+  ) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),  # Rotate x-axis labels for better readability
+    panel.grid.major = element_line(size = 0.5, color = "gray", linetype = "dashed"),
+    panel.grid.minor = element_blank()  # Remove minor grid lines
+  ) +
+  theme(legend.position = "none")+
+  scale_color_viridis_c(name="GPP")  
+```
+
+```{r, warning=F, size = 'small', echo=T}
+
+library(ggplot2)
+library(ggrepel)
+library(viridis)
+
+spc_tbl <- table_s1 %>%
+  mutate(site = paste0("nwis_", `Site Number`))
+
+# Ensure `site` is correctly formatted in both dataframes
+spc_tbl <- spc_tbl %>%
+  mutate(site = paste0("nwis_", str_pad(`Site Number`, width = 8, pad = "0")))
+
+
+#data_intra_annual_mon
+
+site_check_with_cv <- spc_tbl %>%
+  left_join(data_intra_annual_overall, by = c("site")) %>%
+  dplyr::rename(drainage_area_km="Drainage Area (km2)")
+
+site_check_with_cv <- spc_tbl %>%
+  left_join(data_intra_annual_overall, by = c("site")) %>%
+  dplyr::rename(drainage_area_km="Drainage Area (km2)")
+
+
+
+site_check_with_cv_er <- spc_tbl %>%
+  left_join(data_intra_annual_overall_er, by = c("site")) %>%
+  dplyr::rename(drainage_area_km="Drainage Area (km2)")
+
+```
+
+#### Histograms of mean GPP by location:
+
+```{r, warning=F, size = 'small', echo=F, include=F, fig.width=16, fig.height=14}
+site_check_with_cv$drainage_category <- cut(site_check_with_cv$drainage_area_km,
+                                            breaks = quantile(site_check_with_cv$drainage_area_km, probs = seq(0, 1, 0.25), na.rm = TRUE),
+                                            labels = c("Small", "Medium", "Large", "Very Large"),
+                                            include.lowest = TRUE)
+
+
+site_check_with_cv$lat_category <- cut(site_check_with_cv$Latitude,
+                                            breaks = quantile(site_check_with_cv$Latitude, probs = seq(0, 1, 0.25), na.rm = TRUE),
+                                            labels = c("south", "mid-south", "mid-north", "north"),
+                                            include.lowest = TRUE)
+
+site_check_with_cv$lon_category <- cut(site_check_with_cv$Longitude,
+                                            breaks = quantile(site_check_with_cv$Longitude, probs = seq(0, 1, 0.25), na.rm = TRUE),
+                                            labels = c("west", "west-central", "east-central", "east"),
+                                            include.lowest = TRUE)
+
+
+hist1<- ggplot(site_check_with_cv, aes(x = mu_intra_annual)) +
+  geom_histogram(aes(fill = drainage_category,  color = drainage_category),  position = "dodge", alpha = 0.7, bins = 10) +
+   scale_fill_viridis_d(option = "viridis", name = "drainage area") +  # Use a continuous color scale for CV
+    scale_color_viridis_d(option = "viridis", name = "drainage area") +
+  labs(x = "Mean GPP", y = "Frequency", fill = "Drainage Size") +
+  theme_minimal()
+
+
+hist2<- ggplot(site_check_with_cv, aes(x = mu_intra_annual)) +
+  geom_histogram(aes(fill = lat_category, color = lat_category), position = "dodge", alpha = 0.7, bins = 10) +
+   scale_fill_viridis_d(option = "viridis", name = "Latitude") +  
+  labs(x = "Mean GPP", y = "Frequency", fill = "Latitude ") +
+       scale_color_viridis_d(option = "viridis", name = "Latitude") +
+  theme_minimal()
+
+
+hist3<-ggplot(site_check_with_cv, aes(x = mu_intra_annual)) +
+  geom_histogram(aes(fill = lon_category, color = lon_category),  position = "dodge", alpha = 0.7, bins = 10) +
+   scale_fill_viridis_d(option = "viridis", name = "Longitude") + 
+     scale_color_viridis_d(option = "viridis", name = "Longitude") +
+  labs(x = "Mean GPP", y = "Frequency", fill = "Longitude ") +
+  theme_minimal()
+
+```
+
+```{r, warning=F, size = 'small', echo=F, fig.width=12, fig.height=3}
+# Arrange plots with shared legend at the bottom
+KD_coeff_grid <- ggarrange(
+  hist1,
+  hist2,
+  hist3,
+  ncol = 3, nrow = 1
+)
+
+KD_coeff_grid
+```
+
+```{r, warning=F, size = 'small', echo=F, include=F, fig.width=16, fig.height=12}
+site_check_with_cv_er$drainage_category <- cut(site_check_with_cv_er$drainage_area_km,
+                                            breaks = quantile(site_check_with_cv_er$drainage_area_km, probs = seq(0, 1, 0.25), na.rm = TRUE),
+                                            labels = c("Small", "Medium", "Large", "Very Large"),
+                                            include.lowest = TRUE)
+
+
+site_check_with_cv_er$lat_category <- cut(site_check_with_cv_er$Latitude,
+                                            breaks = quantile(site_check_with_cv_er$Latitude, probs = seq(0, 1, 0.25), na.rm = TRUE),
+                                            labels = c("south", "mid-south", "mid-north", "north"),
+                                            include.lowest = TRUE)
+
+site_check_with_cv_er$lon_category <- cut(site_check_with_cv_er$Longitude,
+                                            breaks = quantile(site_check_with_cv_er$Longitude, probs = seq(0, 1, 0.25), na.rm = TRUE),
+                                            labels = c("west", "west-central", "east-central", "east"),
+                                            include.lowest = TRUE)
+
+
+hist1<- ggplot(site_check_with_cv_er, aes(x = mu_intra_annual)) +
+  geom_histogram(aes(fill = drainage_category,  color = drainage_category),  position = "dodge", alpha = 0.7, bins = 10) +
+   scale_fill_viridis_d(option = "viridis", name = "drainage area") +  # Use a continuous color scale for CV
+    scale_color_viridis_d(option = "viridis", name = "drainage area") +
+  labs(x = "Mean ER", y = "Frequency", fill = "Drainage Size") +
+  theme_minimal()
+
+
+hist2<- ggplot(site_check_with_cv_er, aes(x = mu_intra_annual)) +
+  geom_histogram(aes(fill = lat_category, color = lat_category), position = "dodge", alpha = 0.7, bins = 10) +
+   scale_fill_viridis_d(option = "viridis", name = "Latitude") +  
+  labs(x = "Mean ER", y = "Frequency", fill = "Latitude ") +
+       scale_color_viridis_d(option = "viridis", name = "Latitude") +
+  theme_minimal()
+
+
+hist3<-ggplot(site_check_with_cv_er, aes(x = mu_intra_annual)) +
+  geom_histogram(aes(fill = lon_category, color = lon_category),  position = "dodge", alpha = 0.7, bins = 10) +
+   scale_fill_viridis_d(option = "viridis", name = "Longitude") + 
+     scale_color_viridis_d(option = "viridis", name = "Longitude") +
+  labs(x = "Mean ER", y = "Frequency", fill = "Longitude ") +
+  theme_minimal()
+
+```
+
+```{r, warning=F, size = 'small', echo=F, fig.width=12, fig.height=3}
+# Arrange plots with shared legend at the bottom
+grid <- ggarrange(
+  hist1,
+  hist2,
+  hist3,
+  ncol = 3, nrow = 1
+)
+
+grid
+```
+
+#### Histograms of CV GPP by location:
+
+```{r, warning=F, size = 'small', echo=F, include=F, fig.width=16, fig.height=12}
+
+hist1<- ggplot(site_check_with_cv, aes(x = cv_intra_annual)) +
+  geom_histogram(aes(fill = drainage_category,  color = drainage_category),  position = "dodge", alpha = 0.7, bins = 10) +
+   scale_fill_viridis_d(option = "viridis", name = "drainage area") +  # Use a continuous color scale for CV
+    scale_color_viridis_d(option = "viridis", name = "drainage area") +
+  labs(x = "CV GPP", y = "Frequency", fill = "Drainage Size") +
+  theme_minimal()
+
+
+hist2<- ggplot(site_check_with_cv, aes(x = cv_intra_annual)) +
+  geom_histogram(aes(fill = lat_category, color = lat_category), position = "dodge", alpha = 0.7, bins = 10) +
+   scale_fill_viridis_d(option = "viridis", name = "Latitude") +  
+  labs(x = "CV GPP", y = "Frequency", fill = "Latitude ") +
+       scale_color_viridis_d(option = "viridis", name = "Latitude") +
+  theme_minimal()
+
+
+hist3<-ggplot(site_check_with_cv, aes(x = cv_intra_annual)) +
+  geom_histogram(aes(fill = lon_category, color = lon_category),  position = "dodge", alpha = 0.7, bins = 10) +
+   scale_fill_viridis_d(option = "viridis", name = "Longitude") + 
+     scale_color_viridis_d(option = "viridis", name = "Longitude") +
+  labs(x = "CV GPP", y = "Frequency", fill = "Longitude ") +
+  theme_minimal()
+
+```
+
+```{r, warning=F, size = 'small', echo=F, fig.width=12, fig.height=3}
+# Arrange plots with shared legend at the bottom
+grid <- ggarrange(
+  hist1,
+  hist2,
+  hist3,
+  ncol = 3, nrow = 1
+)
+
+grid
+```
+
+```{r, warning=F, size = 'small', echo=F, include=F, fig.width=16, fig.height=12}
+
+hist1<- ggplot(site_check_with_cv_er, aes(x = cv_intra_annual)) +
+  geom_histogram(aes(fill = drainage_category,  color = drainage_category),  position = "dodge", alpha = 0.7, bins = 10) +
+   scale_fill_viridis_d(option = "viridis", name = "drainage area") +  # Use a continuous color scale for CV
+    scale_color_viridis_d(option = "viridis", name = "drainage area") +
+  labs(x = "CV ER", y = "Frequency", fill = "Drainage Size") +
+  theme_minimal()
+
+
+hist2<- ggplot(site_check_with_cv_er, aes(x = cv_intra_annual)) +
+  geom_histogram(aes(fill = lat_category, color = lat_category), position = "dodge", alpha = 0.7, bins = 10) +
+   scale_fill_viridis_d(option = "viridis", name = "Latitude") +  
+  labs(x = "CV ER", y = "Frequency", fill = "Latitude ") +
+       scale_color_viridis_d(option = "viridis", name = "Latitude") +
+  theme_minimal()
+
+
+hist3<-ggplot(site_check_with_cv_er, aes(x = cv_intra_annual)) +
+  geom_histogram(aes(fill = lon_category, color = lon_category),  position = "dodge", alpha = 0.7, bins = 10) +
+   scale_fill_viridis_d(option = "viridis", name = "Longitude") + 
+     scale_color_viridis_d(option = "viridis", name = "Longitude") +
+  labs(x = "CV ER", y = "Frequency", fill = "Longitude ") +
+  theme_minimal()
+
+```
+
+```{r, warning=F, size = 'small', echo=F, fig.width=12, fig.height=3}
+# Arrange plots with shared legend at the bottom
+grid <- ggarrange(
+  hist1,
+  hist2,
+  hist3,
+  ncol = 3, nrow = 1
+)
+
+grid
+```
+
+```{r, warning=F, size = 'small', echo=F, include=T, fig.width=16, fig.height=12}
+
+# Create the map plot with color based on CV of GPP
+coords_map <- ggmap(map) +
+  geom_point(data = site_check_with_cv, aes(x = Longitude, y = Latitude, color = cv_intra_annual), size = 3) +
+  geom_label_repel(data = site_check_with_cv, aes(x = Longitude, y = Latitude, label = site, color = cv_intra_annual), fontface = "bold", size = 5) +
+  xlab("Longitude") + ylab("Latitude") + theme_bw() +
+  scale_color_viridis_c(option = "viridis", name = "Intra-annual CV") +  # Use a continuous color scale for CV
+  # Add the scale bar
+  theme(
+    axis.text = element_text(size = 16),
+    axis.title = element_text(size = 16, colour = "black", face = "bold"),
+    panel.border = element_rect(size = 1.5, colour = "black"),
+    legend.text = element_text(size = 16),
+    legend.title = element_text(size = 16, face = "bold"),
+    panel.grid = element_blank()
+  )
+
+# Print the map
+coords_map
+
+```
+
+#### **Q1: Is the degree of intra-annual variation in lake or stream metabolism is a function of regional location in the US/ northern hemisphere?**
+
+#### **A:** Possibly not in the streams.
+
+-   Might be worth scaling GPP by catchment size/ or stream size first.
+
+```{r, warning=F, size = 'small', echo=F, include=F}
+
+library(dplyr)
+
+# Assuming 'data' has 'Year', 'Month', and 'GPP_filled'
+data_intra_annual <- river_metab_filled %>%
+  mutate(month= month(date)) %>%
+  group_by(site, year, month) %>%
+  summarise(
+    monthly_avg_GPP = mean(GPP_filled, na.rm = TRUE),
+    monthly_cv_GPP = sd(GPP_filled, na.rm = TRUE) / mean(GPP_filled, na.rm = TRUE) * 100
+  ) %>%
+  ungroup()
+
+
+
+# Summarize intra-annual CV for each year
+intra_annual_variation <- data_intra_annual %>%
+  group_by(year) %>%
+  summarise(
+    cv_intra_annual = sd(monthly_avg_GPP, na.rm = TRUE) / mean(monthly_avg_GPP, na.rm = TRUE) * 100
+  )
+```
+
+
+#### Load Lake productivity data:
+
+##### Ladwig et al. NTL 2008-2021
+
+- NEP in milligramPerMeterCubedPerDay
+
+```{r, warning=F, size = 'small', echo=T, include=T}
+Ladwig_NTL_dat_metab <- read.csv("/Users/kellyloria/Documents/River_Recovery_Dynamics_Analysis/data/Lakes_dat/knb-lter-ntl.402.2/model_output.csv")%>%
+  mutate(date=as.Date(datetime),
+         year=year(date),
+         jday= yday(date)) %>%
+  filter(date> as.Date("2007-12-31") & date< as.Date("2022-01-01")) %>%
+  mutate(NEP_gm3d = c(NEP*0.001)) %>%
+    mutate(source= "Ladwig") %>%
+  dplyr::select(site="lake", date, year, jday, NEP_gm3d, source) 
+
+head(Ladwig_NTL_dat_metab)
+```
+
+
+##### Rabaey et al. 
+
+- GPP/ER/NEP in grams O2 per m3 per day
+
+```{r, warning=F, size = 'small', echo=T, include=T}
+Rabaey_dat_metab <- read.csv("/Users/kellyloria/Documents/River_Recovery_Dynamics_Analysis/data/Lakes_dat/edi.1531.2/metabolism_daily_summaries.csv")%>%
+  mutate(date=as.Date(date),
+         year=year(date),
+         jday= yday(date)) %>% 
+  mutate(source= "Rabaey") %>%
+  dplyr::select(site="name", date, year, jday, NEP_gm3d ="nep", source) 
+
+head(Rabaey_dat_metab)
+```
+
+
+
+
+##### Oleksy et al. 
+
+- GPP/ER in milligramsO2PerLiterPerDay
+
+```{r, warning=F, size = 'small', echo=T, include=T}
+Oleksy_dat_metab <- read.csv("/Users/kellyloria/Documents/River_Recovery_Dynamics_Analysis/data/Lakes_dat/edi.1541.2/daily_metabolism.csv") %>%
+  mutate(date=as.Date(date),
+         year=year(date),
+         jday= yday(date)) %>%
+    mutate(source= "Oleksy",
+           NEP = c(GPP_mgO2L-ER_mgO2L),
+           NEP_g =c(NEP * 0.001),
+           NEP_gm3d =c(NEP * 0.001)) %>%
+  dplyr::select(site="lakeName", date, year, jday, NEP_gm3d, source)
+
+head(Oleksy_dat_metab)
+```
+
+
+
+##### Lotting et al. 
+
+- Production (millimolscarbonpercubicmeterperday) estimated from high frequency dissolved oxygen time series.
+
+-  1 mmol of carbon is associated with the production or consumption of 1 mmol of O2 so: 
+
+    millimolscarbonpercubicmeterperday * 32.00 = milligramPerMeterCubedPerDay
+
+```{r, warning=F, size = 'small', echo=T, include=T}
+Lotting_dat_metab <- read.csv("/Users/kellyloria/Documents/River_Recovery_Dynamics_Analysis/data/Lakes_dat/Facundo_Rec/knb-lter-ntl.397.1/lottig_etal_data.csv") %>%
+  mutate(date=as.Date(date),
+         year=year(date),
+         jday= yday(date)) %>%
+    mutate(source= "Lotting",
+           NEP_mg =c(o2_pp_mmolcm3d * 32),
+           NEP_gm3d =c(NEP_mg * 0.001)) %>%
+  dplyr::select(site="lake", date, year, jday, NEP_gm3d, source)
+
+head(Lotting_dat_metab)
+```
+
+
+```{r, warning=F, size = 'small', echo=F, include=F}
+lake_metab <- rbind(Ladwig_NTL_dat_metab, Rabaey_dat_metab, Oleksy_dat_metab, Lotting_dat_metab)
+```
+
+```{r, warning=F, size = 'small', echo=F, include=T, fig.width=12, fig.height=8}
+ggplot(lake_metab%>%filter(source=="Ladwig"), aes(x = jday, y = NEP_gm3d, color = factor(year), group = interaction(site, year), shape=source)) +
+  geom_point() +  
+  facet_wrap(~site, scales = 'free_y') +  # scales = 'free_y'
+  theme_minimal() +  
+  labs(
+    title = "Average annual NEP by Lake in Ladwig data",
+    x = "Day of Year",
+    y = "NEP gO m3 d"
+  ) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),  # Rotate x-axis labels for better readability
+    panel.grid.major = element_line(size = 0.5, color = "gray", linetype = "dashed"),
+    panel.grid.minor = element_blank()  # Remove minor grid lines
+  ) +
+  scale_color_viridis_d(name="Year")  # Use discrete color scale for 'year'
+```
+
+
+```{r, warning=F, size = 'small', echo=F, include=T, fig.width=12, fig.height=8}
+ggplot(lake_metab%>%filter(source=="Rabaey") %>%filter(year>2007), aes(x = jday, y = NEP_gm3d, color = factor(year), group = interaction(site, year), shape=source)) +
+  geom_point() +  
+  facet_wrap(~site, scales = 'free_y') +  # scales = 'free_y'
+  theme_minimal() +  
+  labs(
+    title = "Average annual NEP by Lake in Rabaey data",
+    x = "Day of Year",
+    y = "NEP gO m3 d"
+  ) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),  # Rotate x-axis labels for better readability
+    panel.grid.major = element_line(size = 0.5, color = "gray", linetype = "dashed"),
+    panel.grid.minor = element_blank()  # Remove minor grid lines
+  ) +
+  scale_color_viridis_d(name="Year")  # Use discrete color scale for 'year'
+```
+
+
+
+```{r, warning=F, size = 'small', echo=F, include=T, fig.width=12, fig.height=8}
+ggplot(lake_metab%>%filter(source=="Lotting"), aes(x = jday, y = NEP_gm3d, color = factor(year), group = interaction(site, year), shape=source)) +
+  geom_point() +  
+  facet_wrap(~site, scales = 'free_y') +  # scales = 'free_y'
+  theme_minimal() +  
+  labs(
+    title = "Average annual NEP by Lake in Ladwig data",
+    x = "Day of Year",
+    y = "NEP gO m3 d"
+  ) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),  # Rotate x-axis labels for better readability
+    panel.grid.major = element_line(size = 0.5, color = "gray", linetype = "dashed"),
+    panel.grid.minor = element_blank()  # Remove minor grid lines
+  ) +
+  scale_color_viridis_d(name="Year")  # Use discrete color scale for 'year'
+```
+
+
+
+```{r, warning=F, size = 'small', echo=F, include=T, fig.width=12, fig.height=9}
+ggplot(lake_metab%>%filter(source=="Oleksy") %>%filter(year>2007), aes(x = jday, y = NEP_gm3d, color = factor(year), group = interaction(site, year), shape=source)) +
+  geom_point() +  
+  facet_wrap(~site, scales = 'free_y') +  # scales = 'free_y'
+  theme_minimal() +  
+  labs(
+    title = "Average annual NEP by Lake in Oleksy data",
+    x = "Day of Year",
+    y = "NEP gO m3 d"
+  ) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),  # Rotate x-axis labels for better readability
+    panel.grid.major = element_line(size = 0.5, color = "gray", linetype = "dashed"),
+    panel.grid.minor = element_blank()  # Remove minor grid lines
+  ) +
+  scale_color_viridis_d(name="Year")  # Use discrete color scale for 'year'
+```
+
+###
+
+```{r, warning=F, size = 'small', echo=F, include=T, fig.width=12, fig.height=9}
+# Load necessary libraries
+library(dplyr)
+library(ggplot2)
+library(geosphere)
+
+
+time_df <- river_metab_filled%>%
+  left_join(site_check_with_cv, by=c("site")) # %>%  left_join(PRISM_data)
+
+
+#  Extract coordinates for the reference site (nwis_01400500)
+# farthest east site
+reference_site <- time_df[time_df$site == "nwis_01400500", ] 
+reference_site <- reference_site[1, ]
+
+distances <- distVincentySphere(
+  p1 = c(reference_site$Longitude, reference_site$Latitude), # nwis_01400500
+  p2 = cbind(locations$Longitude, locations$Latitude)
+)
+
+distance_data <- data.frame(
+  site = locations$site,
+  distance_to_ref = distances*0.001 # km
+)
+
+
+distance_data <- distance_data %>%
+  mutate(distance_to_ref = ifelse(site == "nwis_01400500", 0, distance_to_ref))
+
+# Merge distance data with river metabolism data
+river_metab_f <- time_df %>%
+  left_join(distance_data, by = "site")
+
+# Define distance bands
+distance_bands <- seq(0, max(distance_data$distance_to_ref, na.rm = TRUE), by = 50)
+
+# Function to calculate the correlation for each distance band
+correlation_by_distance <- function(data, bands) {
+  cor_results <- data.frame(distance_band = numeric(), correlation = numeric())
+  
+  # Get the reference site's GPP data
+  ref_data <- data %>% filter(distance_to_ref == 0)
+  
+  if (nrow(ref_data) == 0) {
+    stop("No reference site found with distance_to_ref == 0.")
+  }
+  
+  for (i in 1:(length(bands) - 1)) {
+    # Subset the data for the current distance band
+    subset_data <- data %>%
+      filter(distance_to_ref >= bands[i] & distance_to_ref < bands[i+1])
+    
+    # Calculate the correlation for the subset (if there are enough data points)
+    if (nrow(subset_data) > 1) {
+      corr <- cor(subset_data$GPP, subset_data$distance_to_ref, use = "complete.obs")
+    } else {
+      corr <- NA
+    }
+    
+    # Store results
+    cor_results <- rbind(cor_results, data.frame(
+      distance_band = (bands[i] + bands[i+1]) / 2, 
+      correlation = corr
+    ))
+  }
+  
+  return(cor_results)
+}
+
+# Compute the correlations by distance band
+cor_results <- correlation_by_distance(river_metab_f, distance_bands)
+cor_results
+
+
+```
+
+#### streams don't appear to be synchonous with one another 
+
+```{r, warning=F, size = 'small', echo=F, include=T, fig.width=12, fig.height=9}
+
+
+ggp_spat_synch <- ggplot(cor_results, aes(x = distance_band, y = correlation)) +
+  geom_smooth(se=F, method="lm")+
+  geom_point(color = "red") +  # Red points for each correlation
+  theme_minimal() +
+  geom_hline(yintercept = 0) +
+  labs(
+    title = "Correlation of GPP vs Distance",
+    x = "Distance (km)",
+    y = "Correlation Coefficient"
+  ) +
+  theme(
+    axis.title = element_text(size = 14),
+    axis.text = element_text(size = 12)
+  )
+
+ggp_spat_synch
+
+
+```
+
+
+### temp sychn
+
+
+```{r, warning=F, size = 'small', echo=F, include=T, fig.width=12, fig.height=9}
+# Load necessary libraries
+library(dplyr)
+library(ggplot2)
+library(geosphere)
+
+#  Extract coordinates for the reference site (nwis_01400500)
+# farthest east site
+reference_site <- time_df[time_df$site == "nwis_01400500", ] 
+reference_site <- reference_site[1, ]
+
+distances <- distVincentySphere(
+  p1 = c(reference_site$Longitude, reference_site$Latitude), # nwis_01400500
+  p2 = cbind(locations$Longitude, locations$Latitude)
+)
+
+distance_data <- data.frame(
+  site = locations$site,
+  distance_to_ref = distances*0.001 # km
+)
+
+
+distance_data <- distance_data %>%
+  mutate(distance_to_ref = ifelse(site == "nwis_01400500", 0, distance_to_ref))
+
+# Merge distance data with river metabolism data
+river_metab_f <- time_df %>%
+  left_join(distance_data, by = "site")
+
+# Define distance bands
+distance_bands <- seq(0, max(distance_data$distance_to_ref, na.rm = TRUE), by = 50)
+
+# Function to calculate the correlation for each distance band
+correlation_by_distance <- function(data, bands) {
+  cor_results <- data.frame(distance_band = numeric(), correlation = numeric())
+  
+  # Get the reference site's GPP data
+  ref_data <- data %>% filter(distance_to_ref == 0)
+  
+  if (nrow(ref_data) == 0) {
+    stop("No reference site found with distance_to_ref == 0.")
+  }
+  
+  for (i in 1:(length(bands) - 1)) {
+    # Subset the data for the current distance band
+    subset_data <- data %>%
+      filter(distance_to_ref >= bands[i] & distance_to_ref < bands[i+1])
+    
+    # Calculate the correlation for the subset (if there are enough data points)
+    if (nrow(subset_data) > 1) {
+      corr <- cor(subset_data$discharge, subset_data$distance_to_ref, use = "complete.obs")
+    } else {
+      corr <- NA
+    }
+    
+    # Store results
+    cor_results <- rbind(cor_results, data.frame(
+      distance_band = (bands[i] + bands[i+1]) / 2, 
+      correlation = corr
+    ))
+  }
+  
+  return(cor_results)
+}
+
+# Compute the correlations by distance band
+cor_results <- correlation_by_distance(river_metab_f, distance_bands)
+cor_results
+
+
+```
+
+
+
+```{r, warning=F, size = 'small', echo=F, include=T, fig.width=12, fig.height=9}
+
+
+ggp_spat_synch <- ggplot(cor_results, aes(x = distance_band, y = correlation)) +
+  geom_smooth(se=F, method="lm")+
+  geom_point(color = "red") +  # Red points for each correlation
+  theme_minimal() +
+  geom_hline(yintercept = 0) +
+  labs(
+    title = "Correlation of GPP vs Distance",
+    x = "Distance (km)",
+    y = "Correlation Coefficient"
+  ) +
+  theme(
+    axis.title = element_text(size = 14),
+    axis.text = element_text(size = 12)
+  )
+
+ggp_spat_synch
+
+
+```
+
+
+
+#### First exploration into Moran effect 
+
+```{r, warning=F, size = 'small', echo=F, include=T, fig.width=12, fig.height=9}
+# Load required libraries
+library(ncf)        # For spatial covariance function
+library(ggplot2)    # For visualization
+library(dplyr)      # For data manipulation
+library(geosphere)  # For calculating geodesic distances
+```
+
+```{r, warning=F, size = 'small', echo=F, include=T, fig.width=12, fig.height=9}
+set.seed(1234)
+
+x <- expand.grid(1:20, 1:5)[, 1]
+y <- expand.grid(1:20, 1:5)[, 2]
+
+# The first column (x) represents site locations, and 
+# The second column (y) represents time points. 
+# This creates a total of 100 site-time combinations.
+
+Z <- cbind(rmvn.spa(x = x, y = y, p = 2, method = "gaus"), #rmvn.spa() generates random variates from a spatially autocorrelated multivariate normal distribution.
+           rmvn.spa(x = x, y = y, p = 2, method = "gaus"))
+# The output (Z) is a dataset of spatially correlated values, simulated for 100 sites over 2 year
+
+fit0 <- Sncf(x = x, y = y, z = Z, resamp = 1000, quiet = T)
+
+plot(fit0)
+
+m0.summary <- summary(fit0)
+m0.summary
+
+# Simulate 25% Missingness
+Z.m25 <- Z
+Z.m25[sample(length(x), 0.25 * length(x))] <- NA
+
+
+for (i in 1:nrow(Z)) {
+  idx.tmp <- which(is.na(Z.m25[i, ]))
+  if (length(idx.tmp > 0)) {
+    Z.m25[i, idx.tmp] <- mean(Z.m25[i, ], na.rm = TRUE)
+  }
+}
+
+fit25 <- Sncf(x = x, y = y, z = Z.m25, resamp = 1000, quiet = T)
+plot(fit25)
+m25.summary <- summary(fit25)
+m25.summary
+
+
+```
+
+
+```{r, warning=F, size = 'small', echo=F, include=T, fig.width=12, fig.height=9}
+# Simulate 0% Missingness Data at 100 Sites Over 2 Years
+# Load your dataset
+df <- site_check_with_cv
+
+#data_intra_annual_mon
+
+data_intra_annual
+
+
+river_metab_f <- river_metab_filled %>%
+  mutate(Name = sub("^nwis_", "", site))
+
+PRISM_dataf <- PRISM_data %>%
+  mutate(Name = str_pad(Name, width = 8, side = "left", pad = "0"))
+
+PRISM_data_month<- PRISM_data%>%
+  mutate(month=month(Date),
+         year= year(Date)) %>%
+  group_by(Name, month, year) %>%
+    summarise(across(everything(), mean, na.rm = TRUE), .groups = "drop")
+
+unique(PRISM_dataf$Name)
+str(PRISM_dataf)
+str(river_metab_f)
+
+
+unique(river_metab_f$Name)
+  
+df<- river_metab_f%>%
+  left_join(PRISM_data, by=c("Name","date"="Date"))
+
+df <- na.omit(df)
+
+unique(df$Name)
+df <- as.data.frame(df)
+str(df)
+
+df <- spc_tbl %>%
+  left_join(river_metab_f, by = c("site")) %>%
+  dplyr::rename(drainage_area_km="Drainage Area (km2)")%>%
+  left
+```
+
+
+
+```{r, warning=F, size = 'small', echo=F, include=T, fig.width=12, fig.height=9}
+
+str(df)
+
+df_clean <- df %>%
+  filter(!is.na(mu_intra_annual), !is.na(Longitude), !is.na(Latitude))
+
+# Compute Euclidean distances between site locations
+distance_matrix <- distm(df_clean[, c("Longitude", "Latitude")], fun = distHaversine)/1000   # Convert to km
+
+
+response_variable <- as.numeric(df_clean$monthly_avg_GPP)
+df_clean$Longitude <- as.numeric(df_clean$Longitude)
+df_clean$Latitude <- as.numeric(df_clean$Latitude)
+
+df_clean<- as.data.frame(df_clean)
+
+# Check for NAs in relevant columns
+sum(is.na(df_clean$Longitude))  # Should be 0
+sum(is.na(df_clean$Latitude))   # Should be 0
+sum(is.na(response_variable))  # Should be 0
+
+length(df_clean$Longitude)
+length(df_clean$Latitude)
+length(response_variable)
+
+sum(is.infinite(df_clean$Longitude))   # Check for infinities in Longitude
+sum(is.infinite(df_clean$Latitude))    # Check for infinities in Latitude
+sum(is.infinite(response_variable))    # Check for infinities in response_variable
+
+sum(is.nan(df_clean$Longitude))        # Check for NaNs in Longitude
+sum(is.nan(df_clean$Latitude))         # Check for NaNs in Latitude
+sum(is.nan(response_variable))         # Check for NaNs in response_variable
+
+
+sync_result <- ncf::Sncf(
+  x = distance_matrix, 
+  y = df_clean$Latitude, 
+  z = response_variable, 
+  resamp = 50,  
+  latlon = TRUE
+)
+
+
+sync_result_subset <- ncf::Sncf(
+  x = df_clean$Longitude[1:10], 
+  y = df_clean$Latitude[1:10], 
+  z = response_variable[1:10], 
+  resamp = 50,  
+  latlon = TRUE
+)
+
+df_clean_unique <- df_clean %>% distinct(Longitude, Latitude, .keep_all = TRUE)
+
+response_variable<- df_clean_unique$monthly_avg_GPP
+
+sync_result_subset <- ncf::Sncf(
+  x = df_clean_unique$Longitude[1:10], 
+  y = df_clean_unique$Latitude[1:10], 
+  z = response_variable[1:10], 
+  resamp = 50,  
+  latlon = TRUE
+)
+
+# Compute nonparametric spatial covariance function
+synchrony_model <- Sncf(
+  x = df_clean$Longitude, 
+  y = df_clean$Latitude, 
+  z = df_clean$mu_intra_annual
+)
+
+# Extract key metrics
+initial_correlation <- synchrony_model$y[1]  # Correlation at shortest distance
+mean_correlation <- mean(synchrony_model$y, na.rm = TRUE)  # Average spatial correlation
+synchrony_extent <- max(synchrony_model$x[synchrony_model$y > mean_correlation])  # Distance where covariance remains above avg
+
+# Plot spline correlogram
+plot(synchrony_model, main = "Spline Correlogram of Spatial Synchrony")
+
+# Alternative ggplot visualization
+synchrony_df <- data.frame(
+  Distance = synchrony_model$x,
+  Correlation = synchrony_model$y
+)
+
+ggplot(synchrony_df, aes(x = Distance, y = Correlation)) +
+  geom_line() +
+  geom_hline(yintercept = mean_correlation, linetype = "dashed", color = "red") +
+  labs(title = "Spatial Synchrony Spline Correlogram",
+       x = "Euclidean Distance (km)",
+       y = "Spatial Correlation") +
+  theme_minimal()
+
+```
+
+
+```{r, warning=F, size = 'small', echo=F, include=T, fig.width=12, fig.height=9}
+
+df <- site_check_with_cv
+
+#data_intra_annual_mon
+
+data_intra_annual
+
+
+river_metab_f <- river_metab_filled %>%
+  left_join(site_check_with_cv, by=c("site"))
+
+river_metab_f<- na.omit(river_metab_f)
+
+library(geostats)
+
+
+river_metab_f<- as.data.frame(river_metab_f)
+str(river_metab_f)
+
+mantel.test(river_metab_f$Latitude, river_metab_f$Longitude,
+              river_metab_f$GPP, M1 = NULL, M2 = NULL, resamp = 999, latlon = FALSE, 
+            quiet = FALSE)
+
+
+river_metab_f_small <- river_metab_f[sample(nrow(river_metab_f), 1000), ]
+mantel.test(river_metab_f_small$Latitude, river_metab_f_small$Longitude,
+            river_metab_f_small$GPP, M1 = NULL, M2 = NULL, resamp = 999, 
+            latlon = FALSE, quiet = FALSE)
+
+
+plot()
+```
+
+
+
+```{r, warning=F, size = 'small', echo=F, include=T, fig.width=12, fig.height=9}
+
+# Load necessary libraries
+library(dplyr)
+library(ggplot2)
+library(ggplot2)
+library(corrplot)
+library(tidyr)
+library(ggpubr)
+library(geosphere)
+
+# Assuming your data is stored in 'river_metab_f'
+# 1. First, create a new column for distance based on latitude and longitude (e.g., distance from a reference point)
+# Here, let's assume (lat_ref, lon_ref) is a point of reference for distance calculation
+
+lat_ref <- 40.0  # Example reference latitude
+lon_ref <- -75.0  # Example reference longitude
+
+# Calculate the distance from the reference point for each site using Haversine formula
+river_metab_f <- river_metab_f %>%
+  mutate(distance = distVincentySphere(cbind(Longitude, Latitude), c(lon_ref, lat_ref)))
+
+# 2. Separate data into two periods: 1959–1980 and 1989–2010
+period_1 <- river_metab_f %>%
+  filter(year >= 2008 & year <= 2014)
+
+period_2 <- river_metab_f %>%
+  filter(year >= 2015 & year <= 2021)
+
+# 3. Compute correlations between GPP and distance for each period
+cor_period_1 <- cor(period_1$GPP, period_1$distance, use = "complete.obs")
+cor_period_2 <- cor(period_2$GPP, period_2$distance, use = "complete.obs")
+
+# 4. To generate confidence bands, use bootstrapping to estimate the confidence intervals for each correlation
+bootstrap_cor <- function(data, n_bootstrap = 1000) {
+  boot_cor <- replicate(n_bootstrap, {
+    sample_data <- data[sample(nrow(data), replace = TRUE), ]
+    cor(sample_data$GPP, sample_data$distance, use = "complete.obs")
+  })
+  ci_lower <- quantile(boot_cor, 0.025)
+  ci_upper <- quantile(boot_cor, 0.975)
+  mean_cor <- mean(boot_cor)
+  return(c(mean_cor, ci_lower, ci_upper))
+}
+
+# Bootstrap confidence intervals for each period
+cor_ci_period_1 <- bootstrap_cor(period_1)
+cor_ci_period_2 <- bootstrap_cor(period_2)
+
+# 5. Now, create the plot with confidence bands and the correlation vs. distance plot
+# Combine results into a data frame for plotting
+cor_results <- data.frame(
+  period = c("2008-2014", "2015-2021"),
+  correlation = c(cor_period_1, cor_period_2),
+  lower_ci = c(cor_ci_period_1[2], cor_ci_period_2[2]),
+  upper_ci = c(cor_ci_period_1[3], cor_ci_period_2[3])
+)
+
+# Plot the results
+ggplot(cor_results, aes(x = period, y = correlation, color = period)) +
+  geom_point(size = 4) +
+  geom_errorbar(aes(ymin = lower_ci, ymax = upper_ci), width = 0.1) +
+  scale_color_manual(values = c("blue", "red")) +
+  theme_minimal() +
+  labs(
+    title = "Correlation vs Distance for GPP",
+    x = "Time Period",
+    y = "Correlation Coefficient"
+  )
+
+
+# Load necessary libraries
+library(dplyr)
+library(ggplot2)
+library(geosphere)
+
+# Assuming your data is stored in 'river_metab_f'
+# 1. Calculate the distance from a reference point (as before)
+lat_ref <- 40.0  # Example reference latitude
+lon_ref <- -75.0  # Example reference longitude
+
+river_metab_f <- river_metab_f %>%
+  mutate(distance = distVincentySphere(cbind(Longitude, Latitude), c(lon_ref, lat_ref)))
+
+# 2. Define distance bands (e.g., 0-50 km, 50-100 km, 100-150 km, etc.)
+distance_bands <- seq(0, max(river_metab_f$distance), by = 50)  # Adjust 'by' for the band width
+
+# 3. Create a function to calculate the correlation for each distance band
+correlation_by_distance <- function(data, bands) {
+  cor_results <- data.frame(distance_band = numeric(), correlation = numeric())
+  
+  for (i in 1:(length(bands) - 1)) {
+    # Subset the data for the current distance band
+    subset_data <- data %>%
+      filter(distance >= bands[i] & distance < bands[i+1])
+    
+    # Calculate the correlation for the subset (if there are enough data points)
+    if (nrow(subset_data) > 1) {
+      corr <- cor(subset_data$GPP, subset_data$distance, use = "complete.obs")
+      cor_results <- rbind(cor_results, data.frame(distance_band = (bands[i] + bands[i+1])/2, correlation = corr))
+    }
+  }
+  
+  return(cor_results)
+}
+
+# 4. Compute the correlations by distance band
+cor_results <- correlation_by_distance(river_metab_f, distance_bands)
+
+# 5. Plot the results
+ggplot(cor_results, aes(x = distance_band, y = correlation)) +
+  geom_line(color = "blue") +  # Blue line for correlation
+  geom_point(color = "red") +  # Red points for each correlation
+  theme_minimal() +
+  labs(
+    title = "Correlation of GPP vs Distance",
+    x = "Distance (km)",
+    y = "Correlation Coefficient"
+  ) +
+  theme(
+    axis.title = element_text(size = 14),
+    axis.text = element_text(size = 12)
+  )
+
+
+```
+Brute for a distnace matrix 
+
+```{r, warning=F, size = 'small', echo=F, include=T, fig.width=12, fig.height=9}
+# Install required packages
+install.packages("ncf")
+install.packages("geosphere")
+
+# Load libraries
+library(ncf)
+library(geosphere)
+library(dplyr)
+library(tidyverse)
+
+locations <- river_metab_f %>% 
+  select(Latitude, Longitude) %>% 
+  distinct()
+
+# Create a distance matrix using geosphere's distVincentySphere function
+dist_matrix <- distVincentySphere(cbind(locations$Longitude, locations$Latitude))
+
+
+# Number of distances in the vector
+num_distances <- length(dist_matrix)
+
+# Calculate the number of sites
+num_sites <- nrow(locations)
+
+# Check if the number of distances matches the expected number of pairs
+expected_num_distances <- num_sites * (num_sites - 1) / 2
+
+if (num_distances != expected_num_distances) {
+  stop("The number of distances does not match the expected number based on the number of sites.")
+}
+
+# Convert the vector of distances to a square distance matrix
+dist_matrix_square <- matrix(NA, nrow = num_sites, ncol = num_sites)
+
+# Fill the upper triangle with the values from the dist_matrix vector
+dist_matrix_square[upper.tri(dist_matrix_square)] <- dist_matrix
+
+# Fill the lower triangle by symmetry
+dist_matrix_square[lower.tri(dist_matrix_square)] <- t(dist_matrix_square)[lower.tri(dist_matrix_square)]
+
+# Check the result
+dist_matrix_square
+
+
+# Check the distance matrix dimensions
+dim(dist_matrix_square)  # This should be a square matrix
+
+temp_data <- river_metab_f %>%
+  select(site, year, GPP)
+
+dist_vec <- dist_matrix_square[upper.tri(dist_matrix_square)]  # Distances between pairs
+
+df <- data.frame(distance = dist_vec, gpp = temp_data$GPP)
+
+
+M_b <- cor(temp_data$GPP, temp_data$GPP)
+
+```
+
+
