@@ -36,4 +36,6 @@ docs/
 po/*~
 # RStudio Connect folder
 rsconnect/
-/figure-revealjs/
+#.qmd stuff
+figure-revealjs/
+Lotic_synch_files/
