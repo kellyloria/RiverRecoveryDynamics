@@ -36,4 +36,4 @@ docs/
 po/*~
 # RStudio Connect folder
 rsconnect/
-
+/figure-revealjs/
