@@ -1,0 +1,729 @@
+---
+title: "Synchrony in aquatic ecosystem productivity"
+author: "K. Loria"
+date: "`r Sys.Date()`"
+format: 
+  revealjs:   # << this is the important part!
+    theme: default
+    slide-number: true
+    toc: false
+    transition: fade
+editor: visual
+---
+
+
+## Moran effect
+
+**Moran effect:** Spatial Synchrony is expected to be the strongest between nearby ecosystem with spatially auto correlated abiotic conditions.
+
+Aquatic ecosystems integrate localized and larger scale phenomena (climatic) and the degree of variation in local catchment characteristics (forest cover, land use, topography) is likely to effect how sensitive a given lake or stream is to the Moran effect.
+
+## Synchrony as means of testing the Moran effect
+
+Synchrony can be used to evaluate how sensitive streams and lake are broad- and fine-scale ecosystem drivers.
+
+We think this has been done in lakes (Kling et al. 2000, Vogt et al. 2011, Walter et al. 2021, broadly the landscape limnology concepts by Soranno) but not in as much in streams (Dunkle et al. 2025 -fish, Valentine et al. 2024 -also fish).
+
+We expect GPP and ER streams and lakes to vary based on size (strahler stream order), dominant land cover, topography, geology, and water temperature.
+
+## Research Questions
+
+1\. How does the scale and strength of spatial Synchrony of aquatic metabolism vary among streams and how does that compare to the spatial Synchrony of climate variables?
+
+2\. For streams and lakes within comparable ecoregion, how synchronous is aquatic metabolism and what explains why some areas are more synchronous across lake-stream pairs?
+
+## Stream Data:
+
+**Marzolf et al. 2024** [https://aslopubs.onlinelibrary.wiley.com/doi/10.1002/lol2.10407)- Phenology of gross primary productivity in rivers displays high variability within years but stability across years](https://aslopubs.onlinelibrary.wiley.com/doi/10.1002/lol2.10407)
+
+-   Roughly 63 streams
+-   Metabolism from 2008 to 2020
+
+## Stream Data QA'Qc:
+
+-   Model convergence (rhat\>1.05)
+-   logical flow - k600
+    -   Normality of the distribution of k600 across different flows
+-   logical GPP (GPP \> 0) and ER (ER \< 0) estimates
+
+## Lake Data:
+
+Paired case study approach to stream locations.
+
+<p><small>**Ladwig et al.** [Modeling dataset:](https://portal.edirepository.org/nis/mapbrowse?packageid=knb-lter-ntl.402.2) Long-term Change in Metabolism Phenology across North-Temperate Lakes, Wisconsin, USA 1979-2019 - 8 lakes 2008 - 2021 - Only NEP in milligramPerMeterCubedPerDay</small></p>
+
+<p><small>**Rabaey et al.** [Freshwater biogeochemical hotspots](https://portal.edirepository.org/nis/mapbrowse?packageid=edi.1531.2): High primary production and ecosystem respiration in shallow waterbodies (38 lakes 1 year - GPP/ER/NEP in grams O2 per m3 per day)</small></p>
+
+<p><small>**Oleksy et al.** [Metabolism dataset](https://portal.edirepository.org/nis/mapbrowse?packageid=edi.1541.2): one year of high-frequency temperature, dissolved oxygen, wind, photo synthetically active radiation observations and low-frequency nutrient data for 58 lakes in the Global Lake Ecological Observatory Network. (58 lakes 1 year- GPP/ER in milligramsO2PerLiterPerDay) </small></p>
+
+<p><small>**Lotting et al.** Added castle and and midwest lake </small></p>
+
+```{r, echo=FALSE, include=FALSE}
+library(data.table) # Allows fast reading and writing of files
+library(ggplot2)    # For plotting
+library(tidyverse)  # For data processing
+library(lubridate)  # For date processing
+library(reshape2)   # For reshaping the data into long format
+library(ncf)        # For Synchrony analysis
+library(grid)       # for labeling the gridded plot
+library(gridExtra)  # for creating a labeled, gridded plot
+library(FSA)        # For making depletion estimates
+library(knitr)      # For making tidy tables
+
+```
+
+```{r, echo=FALSE, include=FALSE}
+RR_dat <- read.csv("/Users/kellyloria/Documents/River_Recovery_Dynamics_Analysis/data/RR_dat.csv")%>%
+  mutate(date= as.Date(date)) %>%
+  dplyr::select(Site_ID, Lat, Lon, date, year, GPP_filled, discharge, temp.water, 
+                ppt_mm, TmeanC) 
+```
+
+## Geographic coverage of stream and lake metabolism data:
+
+```{r, warning=F, size = 'small', echo=FALSE, include=FALSE}
+## Read in data 
+
+metab_ts <- readRDS("/Users/kellyloria/Documents/River_Recovery_Dynamics_Analysis/data/Metab_TS.rds")
+# str(metab_ts)
+
+dat_ts <- readRDS("/Users/kellyloria/Documents/River_Recovery_Dynamics_Analysis/data/TS_SPC_pH_FNU.rds")
+# str(dat_ts)
+# summary(dat_ts)
+# unique(dat_ts$site_name)
+
+metab_meta_dat <- readRDS("/Users/kellyloria/Documents/River_Recovery_Dynamics_Analysis/data/Metab_metadata.rds")
+# str(metab_ts)
+
+
+marz_dat <- read.csv("/Users/kellyloria/Documents/River_Recovery_Dynamics_Analysis/data/doi_10_5061_dryad_bcc2fqzj2__v20230622/data_citation/1_site_info.csv")
+# 63 different sites 
+
+Ladwig_NTL_dat_metadf <- read.csv("/Users/kellyloria/Documents/River_Recovery_Dynamics_Analysis/data/Lakes_dat/knb-lter-ntl.402.2/Ladwig_NTL_lake_cords.csv")%>%
+  dplyr::select(Site.Number, Latitude, Longitude) %>%
+  mutate(source="ladwig_NTL_lake")
+
+Oleksy_dat_metadf <- read.csv("/Users/kellyloria/Documents/River_Recovery_Dynamics_Analysis/data/Lakes_dat/edi.1541.2/lake_descriptions.csv") %>%
+  filter(data_request=="yes")%>%
+  dplyr::select(Site.Number ="lakeName", Latitude="lat_dd", Longitude="long_dd") %>%
+  mutate(source="oleksy_lake")
+
+Oleksy_good_sites <- unique(Oleksy_dat_metadf$Site.Number)
+
+Rabaey_dat_metadf <- read.csv("/Users/kellyloria/Documents/River_Recovery_Dynamics_Analysis/data/Lakes_dat/edi.1531.2/metadata.csv")%>%
+  dplyr::select(Site.Number ="pond_name", Latitude="latitude", Longitude="longitude") %>%
+  mutate(source="rabaey_lake")
+
+corman_dat_metadf <- read.csv("/Users/kellyloria/Documents/River_Recovery_Dynamics_Analysis/data/Lakes_dat/load_metab_results/corman_lake_cords.csv")%>%
+  filter(country=="United States" | country== "Canada") %>%
+  dplyr::select(Site.Number ="Lake", Latitude="Latitude", Longitude="Longitude") %>%
+  mutate(source="corman_lake")
+
+lotting_dat_metadf <- read.csv("/Users/kellyloria/Documents/River_Recovery_Dynamics_Analysis/data/Lakes_dat/Facundo_Rec/knb-lter-ntl.397.1/Lotting_lake_cords.csv")%>%
+  dplyr::select(Site.Number ="Lake", Latitude="Latitude", Longitude="Longitude") %>%
+  mutate(source="lotting_lake")
+
+
+```
+
+```{r, warning=F, size = 'small', echo=F, include=F}
+
+dat_ts_clean <- dat_ts%>%
+  filter(GPP.Rhat < 1.05 &  GPP >0 & ER <0)
+
+# unique(dat_ts_clean$long_name)
+
+marz_dat_names <- marz_dat%>%
+  dplyr::select(Site.Number, Latitude, Longitude) %>%
+  mutate(source="marzolf_stream")
+
+dat_ts_names <-metab_meta_dat %>%
+   dplyr::select(Site.Number = "site_no", Latitude = "dec_lat_va", Longitude= "dec_long_va") %>%
+  mutate(source="appling_stream")
+
+## quick site check
+site_check <- rbind(marz_dat_names, 
+                  #dat_ts_names,
+                  Ladwig_NTL_dat_metadf, 
+                   Oleksy_dat_metadf,
+                   Rabaey_dat_metadf, #, 
+                   # corman_dat_metadf, 
+                    lotting_dat_metadf)
+```
+
+```{r, warning=F, size = 'small', echo=F, include=FALSE}
+## map packages 
+
+library(tidyverse)
+library(ggrepel)
+library(ggmap)
+library(ggsci)
+library(scales)
+
+library(dplyr)
+library(ggplot2)
+library(ggrepel)
+
+
+#devtools::install_github("briatte/tidykml")
+library(tidykml)
+library(sf)
+```
+
+```{r, warning=F, size = 'small', echo=F, include=T, include=F}
+
+# Define the bounding box coordinates add some wiggle room:
+
+range(na.omit(site_check$Longitude))
+range(site_check$Latitude)
+# 
+# Define the bounding box coordinates
+bbox <- c(left = -128.300, bottom = 22.50, right = -63.800, top = 51.50)
+
+# Retrieve terrain map layer using get_stamenmap()
+map <- get_stadiamap(bbox = bbox, zoom = 5, maptype = 'stamen_terrain')
+# need api run for the first time
+
+#library(ggmap)
+# Plot the terrain map
+stamen_map <- ggmap(map)
+```
+
+```{r, size='large', warning=F, echo=F, include=T}
+coords_map <- ggmap(map) +
+  geom_point(data = site_check, aes(x = Longitude, y = Latitude, color = source, shape =source), size = 2) +
+  geom_label_repel(data = site_check, aes(x = Longitude, y = Latitude, label = Site.Number,  fill = source), color= "black", fontface = "bold", size = 2, max.overlaps = 20) +
+  xlab("Longitude") + ylab("Latitude") + theme_bw() +
+  scale_color_viridis_d(option = "viridis",  name = "source")  +
+ scale_fill_viridis_d(option = "viridis",  name = "source", alpha = 0.5)  +
+
+  # Add the scale bar
+  theme(
+    axis.text = element_text(size = 16),
+    axis.title = element_text(size = 16, colour = "black", face = "bold"),
+    panel.border = element_rect(size = 1.5, colour = "black"),
+    legend.text = element_text(size = 16),
+    legend.title = element_text(size = 16, face = "bold"),
+    panel.grid = element_blank()
+  )
+coords_map
+```
+
+
+```{r, echo=FALSE, include=F, warning=FALSE, fig.width=12, fig.height=8}
+Ladwig_NTL_dat_metab <- read.csv("/Users/kellyloria/Documents/River_Recovery_Dynamics_Analysis/data/Lakes_dat/knb-lter-ntl.402.2/model_output.csv")%>%
+  mutate(date=as.Date(datetime),
+         year=year(date),
+         jday= yday(date)) %>%
+  filter(date> as.Date("2007-12-31") & date< as.Date("2022-01-01")) %>%
+  mutate(NEP_gm3d = c(NEP*0.001)) %>%
+    mutate(source= "Ladwig") %>%
+  dplyr::select(site="lake", date, year, jday, NEP_gm3d, source) 
+
+head(Ladwig_NTL_dat_metab)
+
+Rabaey_dat_metab <- read.csv("/Users/kellyloria/Documents/River_Recovery_Dynamics_Analysis/data/Lakes_dat/edi.1531.2/metabolism_daily_summaries.csv")%>%
+  mutate(date=as.Date(date),
+         year=year(date),
+         jday= yday(date)) %>% 
+  mutate(source= "Rabaey") %>%
+  dplyr::select(site="name", date, year, jday, NEP_gm3d ="nep", source) 
+
+head(Rabaey_dat_metab)
+
+
+Oleksy_dat_metab <- read.csv("/Users/kellyloria/Documents/River_Recovery_Dynamics_Analysis/data/Lakes_dat/edi.1541.2/daily_metabolism.csv") %>%
+  filter(lakeName %in% Oleksy_good_sites)%>% ## Oleksy_good_sites
+  mutate(date=as.Date(date),
+         year=year(date),
+         jday= yday(date)) %>%
+    mutate(source= "Oleksy",
+           NEP = c(GPP_mgO2L-ER_mgO2L),
+           NEP_g =c(NEP * 0.001),
+           NEP_gm3d =c(NEP * 0.001)) %>%
+  dplyr::select(site="lakeName", date, year, jday, NEP_gm3d, source)
+
+head(Oleksy_dat_metab)
+
+
+Lotting_dat_metab <- read.csv("/Users/kellyloria/Documents/River_Recovery_Dynamics_Analysis/data/Lakes_dat/Facundo_Rec/knb-lter-ntl.397.1/lottig_etal_data.csv") %>%
+  mutate(date=as.Date(date),
+         year=year(date),
+         jday= yday(date)) %>%
+    mutate(source= "Lotting",
+           NEP_mg =c(o2_pp_mmolcm3d * 32),
+           NEP_gm3d =c(NEP_mg * 0.001)) %>%
+  dplyr::select(site="lake", date, year, jday, NEP_gm3d, source)
+
+head(Lotting_dat_metab)
+
+lake_metab <- rbind(Ladwig_NTL_dat_metab, Rabaey_dat_metab, Oleksy_dat_metab, Lotting_dat_metab)
+
+```
+
+## Temporal resolution of stream metabolism data:
+
+```{r, echo=FALSE, include=T, warning=FALSE, fig.width=12, fig.height=8}
+
+plot_Sample_Temporal_Coverage <- RR_dat %>% 
+  group_by(Site_ID, date) %>% 
+  summarise(`log(N)` = log(n())) %>% 
+  ggplot() + ylab("Site ID") +
+  geom_point(aes(x = date, y = Site_ID, color = `log(N)`)) +
+  theme_bw() +
+  theme(text = element_text(size=10), legend.position = "none")
+
+plot_Sample_Temporal_Coverage
+```
+
+## Temporal resolution of lake metabolism data:
+
+```{r, echo=FALSE, include=T, warning=FALSE, fig.width=12, fig.height=8}
+plot_Sample_Temporal_Coverage <- lake_metab %>% 
+  filter(year>2007 & year<=2020)%>%
+  group_by(site, date, source) %>% 
+  summarise(`log(N)` = log(n())) %>% 
+  ggplot() + ylab("Site ID") +
+  geom_point(aes(x = date, y = site, color = source)) +
+  theme_bw() +
+  theme(text = element_text(size=10))
+
+plot_Sample_Temporal_Coverage
+```
+
+```{r, echo=FALSE, include=F, warning=FALSE, fig.width=12, fig.height=8}
+
+# Load Packages
+library(data.table) # Allows fast reading and writing of files
+library(ggplot2)    # For plotting
+library(tidyverse)  # For data processing
+library(lubridate)  # For date processing
+library(reshape2)   # For reshaping the data into long format
+library(ncf)        # For Synchrony analysis
+library(grid)       # for labeling the gridded plot
+library(gridExtra)  # for creating a labeled, gridded plot
+library(FSA)        # For making depletion estimates
+library(knitr)      # For making tidy tables
+
+
+
+RR_dat <- read.csv("/Users/kellyloria/Documents/River_Recovery_Dynamics_Analysis/data/RR_dat.csv")%>%
+  mutate(date= as.Date(date)) %>%
+  dplyr::select(Site_ID, Lat, Lon, date, year, GPP_filled, discharge, temp.water, 
+                ppt_mm, TmeanC) 
+
+
+```
+
+```{r, echo=FALSE, include=F, warning=FALSE, fig.width=12, fig.height=8}
+# https://github.com/gpvalentine/SE_Trout/blob/main/Analysis/SE_Trout_Correlograms.R
+
+RR_dat_sum <-  RR_dat%>%
+  group_by(Site_ID, year, Lon, Lat) %>%
+  summarise(GPP_an= mean(GPP_filled, na.rm=T),
+            GPP_max= max(GPP_filled, na.rm=T),
+        Q_anl= mean(discharge, na.rm=T),
+        wtemp_min= min(temp.water, na.rm=T),
+        wtemp_max= max(temp.water, na.rm=T),
+        wtemp_an= mean(temp.water, na.rm=T),
+        ppt_ann= mean(ppt_mm, na.rm=T),
+        Atemp_ann= max(TmeanC, na.rm=T))
+  
+RR_dat_TS_gpp <- RR_dat_sum %>%
+  dplyr::select(Site_ID,Lon, Lat, year, GPP_an) %>%
+  pivot_wider(names_from = c(year), values_from = GPP_an) 
+
+
+RR_dat_TS_gpp <-na.omit(RR_dat_TS_gpp)
+
+ 
+# Now, calculate spatial Synchrony in the time series using the Sncf() function
+RR_df.corr <- Sncf(x=RR_dat_TS_gpp$Lon,
+                   y=RR_dat_TS_gpp$Lat,
+                   z=RR_dat_TS_gpp[,4:ncol(RR_dat_TS_gpp)],
+                               resamp = 1000, 
+                               latlon = T)
+
+plot(RR_df.corr)
+
+
+RR_dat_TS_gpp1 <- RR_dat_sum %>%
+  dplyr::select(Site_ID,Lon, Lat, year, GPP_max) %>%
+  pivot_wider(names_from = c(year), values_from = GPP_max) 
+
+
+RR_dat_TS_gpp1 <-na.omit(RR_dat_TS_gpp1)
+
+
+# Now, calculate spatial Synchrony in the time series using the Sncf() function
+RR_df.corr1 <- Sncf(x=RR_dat_TS_gpp1$Lon,
+                   y=RR_dat_TS_gpp1$Lat,
+                   z=RR_dat_TS_gpp1[,4:ncol(RR_dat_TS_gpp1)],
+                   resamp = 1000, 
+                   latlon = T)
+
+
+plot(RR_df.corr1)
+
+
+GPP_corrgram_summary.table <- summary(RR_df.corr)
+
+# Plot using ggplot for export
+# create a dataframe of the predicted values
+GPP.corr.pred.df <- data.frame(x = matrix(unlist(RR_df.corr$real$predicted$x)),
+                                             y = matrix(unlist(RR_df.corr$real$predicted$y)))
+
+
+# ...and a dataframe of the y values for the bootstrap prediction
+GPP.corr.bootValues.df <- as.data.frame(t(RR_df.corr$boot$boot.summary$predicted$y))
+
+# merge x and y values (min and max) for the bootstrap confidence intervals into a dataframe
+GPP.corr.boot.df <- data.frame(x = matrix(unlist(RR_df.corr$boot$boot.summary$predicted$x)),
+                                             yminGPP = GPP.corr.bootValues.df$`0.025`,
+                                             ymaxGPP = GPP.corr.bootValues.df$`0.975`)
+
+```
+
+## Correlogam of annual GPP Synchrony
+
+```{r, size='large', echo=FALSE, include=T, warning=FALSE, fig.width=12, fig.height=8}
+
+GPP.synch.plot <- ggplot() +
+  geom_ribbon(data = GPP.corr.boot.df,
+              aes(x = x, ymin = yminGPP, ymax = ymaxGPP),
+              fill = "#4f8c4f", alpha=0.1) +
+  geom_line(data = GPP.corr.pred.df,
+            aes(x = x, y = y), color="#4f8c4f") +
+  geom_hline(yintercept = 0) +
+ # geom_hline(yintercept = RR_df.corr$real$cbar, linetype = "dashed") +
+  theme_classic() +
+  labs(title = "Annual mean stream GPP", 
+       y= "Correlation", 
+       x="Distance (km)") +
+  theme(text = element_text(size=12))
+GPP.synch.plot
+```
+
+## Annual Synchrony of hydro/climate/environmental parameters
+
+Mean spring flow example, where "spring" is month Feb-May
+
+```{r, size='small', echo=T, include=T, warning=FALSE}
+### look at an element of environmental variation -- lets look at spring flow
+RR_dat_sum <-  RR_dat%>%
+  mutate(month=month(date)) %>%
+  filter(month>1 & month<=6) %>%
+  group_by(Site_ID, year, Lon, Lat) %>%
+  summarise(Q_max= max(discharge, na.rm=T),
+            Q_anl= mean(discharge, na.rm=T))
+
+# choosing max flow:
+RR_dat_TS_Q <- RR_dat_sum %>%
+  dplyr::select(Site_ID,Lon, Lat, year, Q_max) %>%
+  pivot_wider(names_from = c(year), values_from = Q_max) 
+
+
+RR_dat_TS_Q <-na.omit(RR_dat_TS_Q)
+
+
+# Now, calculate spatial Synchrony in the time series using the Sncf() function
+Q_RR_df.corr <- Sncf(x=RR_dat_TS_Q$Lon,
+                   y=RR_dat_TS_Q$Lat,
+                   z=RR_dat_TS_Q[,4:ncol(RR_dat_TS_Q)],
+                   resamp = 1000, 
+                   latlon = T)
+
+```
+
+```{r, echo=FALSE, include=F, warning=FALSE, fig.width=12, fig.height=8}
+Q_corrgram_summary.table <- summary(Q_RR_df.corr)
+
+# Plot using ggplot for export
+# create a dataframe of the predicted values
+Q.corr.pred.df <- data.frame(x = matrix(unlist(Q_RR_df.corr$real$predicted$x)),
+                               y = matrix(unlist(Q_RR_df.corr$real$predicted$y)))
+
+
+# ...and a dataframe of the y values for the bootstrap prediction
+Q.corr.bootValues.df <- as.data.frame(t(Q_RR_df.corr$boot$boot.summary$predicted$y))
+
+# merge x and y values (min and max) for the bootstrap confidence intervals into a dataframe
+Q.corr.boot.df <- data.frame(x = matrix(unlist(Q_RR_df.corr$boot$boot.summary$predicted$x)),
+                               yminQ = Q.corr.bootValues.df$`0.025`,
+                               ymaxQ = Q.corr.bootValues.df$`0.975`)
+
+
+
+RR_dat_sum <-  RR_dat%>%
+  group_by(Site_ID, year, Lon, Lat) %>%
+  summarise(GPP_an= mean(GPP_filled, na.rm=T),
+            GPP_max= max(GPP_filled, na.rm=T),
+        Q_anl= mean(discharge, na.rm=T),
+        wtemp_min= min(temp.water, na.rm=T),
+        wtemp_max= max(temp.water, na.rm=T),
+        wtemp_an= mean(temp.water, na.rm=T),
+        ppt_ann= mean(ppt_mm, na.rm=T),
+        Atemp_ann= max(TmeanC, na.rm=T))
+
+
+### Alright lets look at Flow
+RR_dat_TS_temp <- RR_dat_sum %>%
+  dplyr::select(Site_ID,Lon, Lat, year, wtemp_an) %>%
+  pivot_wider(names_from = c(year), values_from = wtemp_an) 
+
+
+RR_dat_TS_temp <-na.omit(RR_dat_TS_temp)
+
+
+# Now, calculate spatial Synchrony in the time series using the Sncf() function
+temp_RR_df.corr <- Sncf(x=RR_dat_TS_temp$Lon,
+                     y=RR_dat_TS_temp$Lat,
+                     z=RR_dat_TS_temp[,4:ncol(RR_dat_TS_temp)],
+                     resamp = 1000, 
+                     latlon = T)
+
+plot(temp_RR_df.corr)
+
+temp_corrgram_summary.table <- summary(temp_RR_df.corr)
+
+# Plot using ggplot for export
+# create a dataframe of the predicted values
+temp.corr.pred.df <- data.frame(x = matrix(unlist(temp_RR_df.corr$real$predicted$x)),
+                             y = matrix(unlist(temp_RR_df.corr$real$predicted$y)))
+
+
+# ...and a dataframe of the y values for the bootstrap prediction
+temp.corr.bootValues.df <- as.data.frame(t(temp_RR_df.corr$boot$boot.summary$predicted$y))
+
+# merge x and y values (min and max) for the bootstrap confidence intervals into a dataframe
+temp.corr.boot.df <- data.frame(x = matrix(unlist(temp_RR_df.corr$boot$boot.summary$predicted$x)),
+                             yminWtemp = temp.corr.bootValues.df$`0.025`,
+                             ymaxWtemp = temp.corr.bootValues.df$`0.975`)
+
+
+
+RR_dat_sum <-  RR_dat%>%
+  group_by(Site_ID, year, Lon, Lat) %>%
+  summarise(GPP_an= mean(GPP_filled, na.rm=T),
+            GPP_max= max(GPP_filled, na.rm=T),
+        Q_anl= mean(discharge, na.rm=T),
+        wtemp_min= min(temp.water, na.rm=T),
+        wtemp_max= max(temp.water, na.rm=T),
+        wtemp_an= mean(temp.water, na.rm=T),
+        ppt_ann= mean(ppt_mm, na.rm=T),
+        Atemp_ann= max(TmeanC, na.rm=T))
+
+
+RR_dat_TS_ppt <- RR_dat_sum %>%
+  dplyr::select(Site_ID,Lon, Lat, year, ppt_ann) %>%
+  pivot_wider(names_from = c(year), values_from = ppt_ann) 
+
+
+RR_dat_TS_ppt <-na.omit(RR_dat_TS_ppt)
+
+
+
+# Now, calculate spatial Synchrony in the time series using the Sncf() function
+ppt_RR_df.corr <- Sncf(x=RR_dat_TS_ppt$Lon,
+                        y=RR_dat_TS_ppt$Lat,
+                        z=RR_dat_TS_ppt[,4:ncol(RR_dat_TS_ppt)],
+                        resamp = 1000, 
+                        latlon = T)
+
+plot(ppt_RR_df.corr)
+
+ppt_corrgram_summary.table <- summary(ppt_RR_df.corr)
+
+# Plot using ggplot for export
+# create a dataframe of the predicted values
+ppt.corr.pred.df <- data.frame(x = matrix(unlist(ppt_RR_df.corr$real$predicted$x)),
+                                y = matrix(unlist(ppt_RR_df.corr$real$predicted$y)))
+
+
+# ...and a dataframe of the y values for the bootstrap prediction
+ppt.corr.bootValues.df <- as.data.frame(t(ppt_RR_df.corr$boot$boot.summary$predicted$y))
+
+# merge x and y values (min and max) for the bootstrap confidence intervals into a dataframe
+ppt.corr.boot.df <- data.frame(x = matrix(unlist(ppt_RR_df.corr$boot$boot.summary$predicted$x)),
+                                yminPPT = ppt.corr.bootValues.df$`0.025`,
+                                ymaxPPT = ppt.corr.bootValues.df$`0.975`)
+
+### Alright lets look max summer temp
+RR_dat_sum <-  RR_dat%>%
+  mutate(month =month(date)) %>%
+  filter(month>5 & month<10) %>%
+  group_by(Site_ID, year, Lon, Lat) %>%
+  summarise(wtemp_max= max(temp.water, na.rm=T),
+            wtemp_an= mean(temp.water, na.rm=T))
+
+
+
+RR_dat_sum <-  RR_dat%>%
+  group_by(Site_ID, year, Lon, Lat) %>%
+  summarise(GPP_an= mean(GPP_filled, na.rm=T),
+            GPP_max= max(GPP_filled, na.rm=T),
+        Q_anl= mean(discharge, na.rm=T),
+        wtemp_min= min(temp.water, na.rm=T),
+        wtemp_max= max(temp.water, na.rm=T),
+        wtemp_an= mean(temp.water, na.rm=T),
+        ppt_ann= mean(ppt_mm, na.rm=T),
+        Atemp_ann= max(TmeanC, na.rm=T))
+
+
+RR_dat_TS_Atemp <- RR_dat_sum %>%
+  dplyr::select(Site_ID,Lon, Lat, year, Atemp_ann) %>%
+  pivot_wider(names_from = c(year), values_from = Atemp_ann) 
+
+
+RR_dat_TS_Atemp <-na.omit(RR_dat_TS_Atemp)
+
+
+
+
+
+# Now, calculate spatial Synchrony in the time series using the Sncf() function
+Atemp_RR_df.corr <- Sncf(x=RR_dat_TS_Atemp$Lon,
+                       y=RR_dat_TS_Atemp$Lat,
+                       z=RR_dat_TS_Atemp[,4:ncol(RR_dat_TS_Atemp)],
+                       resamp = 1000, 
+                       latlon = T)
+
+plot(Atemp_RR_df.corr)
+
+Atemp_corrgram_summary.table <- summary(Atemp_RR_df.corr)
+
+# Plot using ggplot for export
+# create a dataframe of the predicted values
+Atemp.corr.pred.df <- data.frame(x = matrix(unlist(Atemp_RR_df.corr$real$predicted$x)),
+                               y = matrix(unlist(Atemp_RR_df.corr$real$predicted$y)))
+
+
+# ...and a dataframe of the y values for the bootstrap prediction
+Atemp.corr.bootValues.df <- as.data.frame(t(Atemp_RR_df.corr$boot$boot.summary$predicted$y))
+
+# merge x and y values (min and max) for the bootstrap confidence intervals into a dataframe
+Atemp.corr.boot.df <- data.frame(x = matrix(unlist(Atemp_RR_df.corr$boot$boot.summary$predicted$x)),
+                               yminAtemp = Atemp.corr.bootValues.df$`0.025`,
+                               ymaxAtemp = Atemp.corr.bootValues.df$`0.975`)
+
+
+
+############
+big_boot_df<- GPP.corr.boot.df %>%
+  left_join(Q.corr.boot.df, by=c("x")) %>%
+  left_join(temp.corr.boot.df, by=c("x")) %>%
+  left_join(ppt.corr.boot.df, by=c("x")) %>%
+  left_join(Atemp.corr.boot.df, by=c("x")) 
+  
+```
+
+## Correlogam of Synchrony of GPP + other hydro/climate/environmental parameters near streams
+
+```{r, size = 'large', echo=FALSE, include=T, warning=FALSE}
+
+pred_df <- bind_rows(
+  Q.corr.pred.df %>% mutate(group = "Flow"),
+  GPP.corr.pred.df %>% mutate(group = "GPP"),
+  temp.corr.pred.df %>% mutate(group = "Water Temp"),
+  ppt.corr.pred.df %>% mutate(group = "PPT"),
+  Atemp.corr.pred.df %>% mutate(group = "Air Temp")
+)
+
+ribbon_df <- big_boot_df %>%
+  transmute(
+    x = x,
+    Flow_ymin = yminQ, Flow_ymax = ymaxQ,
+    GPP_ymin = yminGPP, GPP_ymax = ymaxGPP,
+    WaterTemp_ymin = yminWtemp, WaterTemp_ymax = ymaxWtemp,
+    PPT_ymin = yminPPT, PPT_ymax = ymaxPPT,
+    AirTemp_ymin = yminAtemp, AirTemp_ymax = ymaxAtemp
+  ) %>%
+  pivot_longer(cols = -x, names_to = c("group", ".value"), names_sep = "_")
+
+synch.plot <- ggplot() +
+  geom_line(data = pred_df,
+            aes(x = x, y = y, color = group)) +
+  geom_hline(yintercept = 0) +
+  theme_classic() +
+  labs(title = "Synchrony across GPP, flow, temp, and ppt",
+              y= "Correlation", 
+       x="Distance (km)",
+       color = "Variable", fill = "Variable") +
+  theme(axis.title.x = element_blank(),
+        axis.title.y = element_blank(),
+        text = element_text(size=14),
+        legend.position = "bottom") +
+  scale_color_manual(values = c(
+    "Flow" = "#6293c4",
+    "GPP" = "#5a8f5e",
+    "Water Temp" = "#DAA520",
+    "PPT" = "#654cad",
+    "Air Temp" = "#b82c02"
+  )) +
+   geom_ribbon(data = big_boot_df,
+              aes(x = x, ymin = yminQ, ymax = ymaxQ),
+              fill = "#6293c4", alpha=0.1) +
+  geom_ribbon(data = big_boot_df,
+              aes(x = x, ymin = yminGPP, ymax = ymaxGPP),
+              fill = "#5a8f5e", alpha=0.1) +
+  geom_ribbon(data = big_boot_df,
+              aes(x = x, ymin = yminWtemp, ymax = ymaxWtemp),
+              fill = "#DAA520", alpha=0.1) +
+  geom_ribbon(data = big_boot_df,
+              aes(x = x, ymin = yminPPT, ymax = ymaxPPT),
+              fill = "#654cad", alpha=0.1) +
+  geom_ribbon(data = big_boot_df,
+              aes(x = x, ymin = yminAtemp, ymax = ymaxAtemp),
+              fill = "#b82c02", alpha=0.1)
+
+
+synch.plot
+
+
+```
+
+## Next steps for streams analyses:
+
+-   Data org:
+
+    -   Identifying ecologically relevant aggregations of time series data to evaluate Synchrony? (e.g. annual spring max flow, average summer temperature)
+
+    -   Land cover data organization - [NHD tools](https://www.sciencebase.gov/catalog/item/5669a79ee4b08895842a1d47)
+
+    -   Light availability (given shading) - MODIS
+
+## Next steps for streams analyses :
+
+-   Compare based how Synchrony (possibly at finer than annual time sieries) in GPP and ER varies based on
+
+    -   Stream size (small, med, large)
+
+    -   Dominate land cover in the catchment/ or along the corridor
+
+    -   Catchment slope
+
+    -   Water temperature
+
+## Next steps cont.
+
+Lakes:
+
+-   Data aggregation -\> QA'QC (GPP, ER, residence time?)
+
+-   Appropriate temporal comparisons for the case study?
+
+-   Lake synchony based on location or size to
+
+    -   Lake size (small, med, large)
+
+    -   Dominate land cover in the catchment/ or along the corridor
+
+    -   Water temperature
+
+## That's it so far!
+
+Advice? / comments ?
+
+Thanks!!
+
+
