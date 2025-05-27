@@ -1,0 +1,438 @@
+---
+title: "Data cleaning and infill for synchrony in aquatic ecosystem productivity"
+description: "Final stream GPP and ER with gap ID"
+author: "K. Loria"
+date: "`r Sys.Date()`"
+output:
+   html_document:
+    theme: simplex
+    highlight: tango
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+```{=html}
+<style type="text/css">
+body, td {font-size: 13px;}
+code.r{font-size: 9px;}
+pre {font-size: 11px}
+</style>
+```
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(warning = F, message = F)
+knitr::opts_knit$set(root.dir = '/Users/kellyloria/Documents/')
+def.chunk.hook  <- knitr::knit_hooks$get("chunk")
+knitr::knit_hooks$set(chunk = function(x, options) {
+  x <- def.chunk.hook(x, options)
+  ifelse(options$size != "normalsize", paste0("\n \\", options$size,"\n\n", x, "\n\n \\normalsize"), x)
+})
+
+```
+
+
+```{r, echo=FALSE, include=FALSE}
+library(data.table) # Allows fast reading and writing of files
+library(ggplot2)    # For plotting
+library(tidyverse)  # For data processing
+library(lubridate)  # For date processing
+library(reshape2)   # For reshaping the data into long format
+library(ncf)        # For Synchrony analysis
+library(grid)       # for labeling the gridded plot
+library(gridExtra)  # for creating a labeled, gridded plot
+library(FSA)        # For making depletion estimates
+library(knitr)      # For making tidy tables
+
+```
+
+```{r, echo=FALSE, include=FALSE}
+
+source('/Users/kellyloria/Documents/River_Recovery_Dynamics_Analysis/RiverRecoveryDynamics/data_structure_fxn/fillMiss3.R')
+source('/Users/kellyloria/Documents/River_Recovery_Dynamics_Analysis/RiverRecoveryDynamics/data_structure_fxn/cor_plot_fxn.R')
+source('/Users/kellyloria/Documents/River_Recovery_Dynamics_Analysis/RiverRecoveryDynamics/data_structure_fxn/depth_stability_fxn.R')
+source('/Users/kellyloria/Documents/River_Recovery_Dynamics_Analysis/RiverRecoveryDynamics/data_structure_fxn/ER_K_covar_fxn.R')
+source('/Users/kellyloria/Documents/River_Recovery_Dynamics_Analysis/RiverRecoveryDynamics/data_structure_fxn/fill_and_normalize_ER_metab.R')
+source('/Users/kellyloria/Documents/River_Recovery_Dynamics_Analysis/RiverRecoveryDynamics/data_structure_fxn/fill_and_normalize_metab.R')
+source('/Users/kellyloria/Documents/River_Recovery_Dynamics_Analysis/RiverRecoveryDynamics/data_structure_fxn/K_Q_covar_fxn.R')
+source('/Users/kellyloria/Documents/River_Recovery_Dynamics_Analysis/RiverRecoveryDynamics/data_structure_fxn/K_stability_fxn.R')
+
+```
+
+```{r, echo=FALSE, include=FALSE}
+RR_dat <- read.csv("/Users/kellyloria/Documents/River_Recovery_Dynamics_Analysis/data/RR_dat.csv")%>%
+  mutate(date= as.Date(date)) %>%
+  dplyr::select(Site_ID, Lat, Lon, date, year, GPP, ER, GPP_filled, discharge, temp.water, 
+                ppt_mm, TmeanC) 
+
+unique(RR_dat$Site_ID)
+
+```
+
+#### Load Marzolf GPP data:
+Starting concerns: 
+
+- High rhats on all parameters..., supposed to be less than 1.2 
+- Flow does go to zero?
+- Depth goes to 39 ?!?
+- Flow goes to 3213.608...
+
+
+```{r, warning=F, size = 'small', echo=T, include=T}
+river_metab <- readr::read_csv('/Users/kellyloria/Documents/River_Recovery_Dynamics_Analysis/data/doi_10_5061_dryad_bcc2fqzj2__v20230622/data_citation/5_usgs_metabolism.csv')
+
+summary(river_metab)
+```
+
+### Remove poorly converged days
+Still some questionable values of K, ER, and GPP
+
+```{r, warning=F, size = 'small', echo=T, include=T}
+
+river_metab <-  river_metab%>%filter(GPP.Rhat<=1.05 & ER.Rhat<=1.05 & K600.Rhat <=1.05)
+summary(river_metab)
+
+```
+
+```{r, warning=F, size = 'small', echo=T, include=T}
+
+qualified_site_years <- river_metab %>%
+  mutate(year = year(date)) %>%
+  group_by(site, year) %>%
+  summarise(n_days = n_distinct(date), .groups = "drop") %>%
+  filter(n_days >= 288)
+
+unique(qualified_site_years$site)
+
+filtered_data <- river_metab %>%
+  mutate(year = year(date)) %>%
+  inner_join(qualified_site_years, by = c("site", "year"))
+
+```
+
+## Data quality 
+
+1. What is the ER~ K?
+
+2. What is the k variance 
+
+3. What are GPP and ER ranges 
+
+
+```{r, warning=F, size = 'small', echo=F, include=T}
+
+ER_K_df <- ER_K_covar_metab(filtered_data)
+summary(ER_K_df)
+
+```
+
+
+
+```{r, warning=F, size = 'small', echo=F, include=T}
+
+plot <- ggplot() +
+  geom_point(data = ER_K_df,
+            aes(y = site, x = cov_ER_K, color=year)) +
+  geom_vline(xintercept = 0) +
+ # geom_hline(yintercept = RR_df.corr$real$cbar, linetype = "dashed") +
+  theme_classic() +
+  labs(title = "Annual GPP to ER correlation") +
+  theme(text = element_text(size=12))
+
+plot
+
+```
+
+
+```{r, warning=F, size = 'small', echo=F, include=T}
+
+K600_stab <- K600_stability(filtered_data)
+summary(K600_stab)
+```
+
+```{r, warning=F, size = 'small', echo=F, include=T}
+
+plot <- ggplot() +
+  geom_point(data = K600_stab,
+            aes(y = site, x = slope_K600, color=year)) +
+  geom_vline(xintercept = 0) +
+ # geom_hline(yintercept = RR_df.corr$real$cbar, linetype = "dashed") +
+  theme_classic() +
+  labs(title = "Annual variation k600") +
+  theme(text = element_text(size=12))
+
+
+plot
+
+```
+
+
+
+```{r, warning=F, size = 'small', echo=F, include=T}
+
+depth_stab <- depth_stability(filtered_data)
+summary(depth_stab)
+```
+
+```{r, warning=F, size = 'small', echo=F, include=T}
+
+plot <- ggplot() +
+  geom_point(data = depth_stab,
+            aes(y = site, x = slope_z, color=year)) +
+  geom_vline(xintercept = 0) +
+  theme_classic() +
+  labs(title = "Annual variation depth") +
+  theme(text = element_text(size=12))
+
+plot
+
+```
+
+
+
+
+
+```{r, warning=F, size = 'small', echo=F, include=T}
+
+KQ_cor <- K_Q_covar_metab(filtered_data)
+summary(KQ_cor)
+
+```
+
+```{r, warning=F, size = 'small', echo=F, include=T}
+
+plot <- ggplot() +
+  geom_point(data = KQ_cor,
+            aes(y = site, x = cov_K_Q, color=year)) +
+  geom_vline(xintercept = 0) +
+  theme_classic() +
+  labs(title = "Annual K600 and flow") +
+  theme(text = element_text(size=12))
+
+
+plot
+
+```
+
+
+```{r, warning=F, size = 'small', echo=F, include=T}
+
+filtered_data_flagged <- filtered_data %>%
+  group_by(site, year) %>%
+  mutate(K600_mean = mean(K600, na.rm = TRUE),
+         K600_sd   = sd(K600, na.rm = TRUE),
+         K600_flag = if_else(K600 > K600_mean + 3 * K600_sd, TRUE, FALSE)) %>%
+  ungroup()
+
+filtered_data_clean <- filtered_data_flagged %>%
+  filter(!K600_flag)
+
+# results <- cor_plot_K600_ER_discharge(filtered_data)
+
+```
+
+
+
+#### Gap fill
+
+'fill_and_normalize_metab.R' is a modified function
+from'code/metabolism_synthesis/Part II- Filtering and gap filling.Rmd
+uses the function fillMiss3.R
+
+**Make sure** to double check the 'summary_site-year_NAs.csv' save path
+in the fxn
+
+-   Extracts unique sites and years from the input data.
+
+-   Tracks missing data for each site-year.
+
+-   Pads the dataset to ensure a full-year time series.
+
+-   Identifies missing data patterns and determines if a year is
+    complete.
+
+-   Applies a gap-filling algorithm (if \<40% of data is missing).
+
+-   Outputs a cleaned and gap-filled dataset for further analysis.
+
+
+
+#### Histogram of infilled GPP 
+
+```{r, warning=F, size = 'small', echo=F, include=T}
+new_dat <- filtered_data %>%
+  dplyr::select(site:shortwave)
+
+river_metab_filled <- fill_and_normalize_metab(new_dat)
+head(river_metab_filled)
+
+ggplot(data = river_metab_filled) +
+  geom_histogram(aes(x = GPP), bins = 30, fill = "green4", color = "black") +
+    geom_histogram(aes(x = GPP_filled), bins = 30, fill = "#227066") +
+  facet_wrap(. ~ site) +
+  theme_minimal()
+
+```
+
+#### Histogram of infilled ER 
+
+
+```{r, warning=F, size = 'small', echo=F, include=T}
+
+river_metab_fill2 <- fill_and_normalize_metab_ER(river_metab_filled)
+head(river_metab_fill2)
+
+ggplot(data = river_metab_fill2) +
+  geom_histogram(aes(x = ER), bins = 30, fill = "goldenrod", color = "black") +
+    geom_histogram(aes(x = ER_filled), bins = 30, fill = "goldenrod1") +
+  facet_wrap(. ~ site) +
+  theme_minimal()
+
+```
+
+
+```{r, warning=F, size = 'small', echo=F, include=F}
+
+library(dplyr)
+
+# 
+date_site_counts <- river_metab_fill2 %>%
+  distinct(site, date) %>%
+  count(date, name = "n_sites")
+
+# 
+n_total_sites <- river_metab_fill2 %>%
+  distinct(site) %>%
+  nrow()
+
+# 
+complete_dates <- date_site_counts %>%
+  pull(date)
+
+# 
+river_metab_matched <- river_metab_fill2 %>%
+  filter(date %in% complete_dates)
+
+names(river_metab_filled)
+
+```
+
+
+
+
+
+#### Gap fill
+
+'fill_and_normalize_metab.R' is a modified function
+from'code/metabolism_synthesis/Part II- Filtering and gap filling.Rmd
+uses the function fillMiss3.R
+
+**Make sure** to double check the 'summary_site-year_NAs.csv' save path
+in the fxn
+
+-   Extracts unique sites and years from the input data.
+
+-   Tracks missing data for each site-year.
+
+-   Pads the dataset to ensure a full-year time series.
+
+-   Identifies missing data patterns and determines if a year is
+    complete.
+
+-   Applies a gap-filling algorithm (if \<40% of data is missing).
+
+-   Outputs a cleaned and gap-filled dataset for further analysis.
+
+
+
+```{r, echo=FALSE, include=F, warning=FALSE, fig.width=12, fig.height=8}
+
+# Load Packages
+library(data.table) # Allows fast reading and writing of files
+library(ggplot2)    # For plotting
+library(tidyverse)  # For data processing
+library(lubridate)  # For date processing
+library(reshape2)   # For reshaping the data into long format
+library(ncf)        # For Synchrony analysis
+library(grid)       # for labeling the gridded plot
+library(gridExtra)  # for creating a labeled, gridded plot
+library(FSA)        # For making depletion estimates
+library(knitr)      # For making tidy tables
+
+# load data package with lat/long
+
+RR_dat <- read.csv("/Users/kellyloria/Documents/River_Recovery_Dynamics_Analysis/data/RR_dat.csv")%>%
+  mutate(date= as.Date(date)) %>%
+  dplyr::select(Site_ID, Lat, Lon, date, year, GPP_filled, discharge, temp.water, 
+                ppt_mm, TmeanC)  
+
+unique(RR_dat$Site_ID)
+
+RR_dat <- RR_dat %>%
+  mutate(Site_ID = str_remove(Site_ID, "^nwis_"))
+
+```
+
+
+
+```{r, echo=FALSE, include=F, warning=FALSE, fig.width=12, fig.height=8}
+# https://github.com/gpvalentine/SE_Trout/blob/main/Analysis/SE_Trout_Correlograms.R
+
+unique(river_metab_matched$site)
+
+river_metab_matched <- river_metab_matched %>%
+  mutate(Site_ID = str_remove(site, "^nwis_"))
+
+river_metab_matched <- river_metab_matched %>%
+  mutate(Site_ID = str_remove(Site_ID, "^0+"))
+
+stream_cords <- RR_dat%>%
+  dplyr::select(Site_ID, Lon, Lat) %>%
+  group_by(Site_ID, Lon, Lat)%>%
+  summarise(Lon=mean(Lon),
+            Lat=mean(Lat))
+   
+stream_cords <- as.data.frame(stream_cords)
+str(stream_cords)
+
+# Data with correct values
+fix_data <- data.frame(
+  Site_ID = c("10129900", "10133650", "10133800", "11044000", "14206950", "14211010"),
+  Lat = c(40.73522634, 40.7238375, 40.75966979, 33.4739175, 45.403452, 45.3792874),
+  Lon = c(-111.4760313, -111.5196438, -111.5640912, -117.1422536, -122.7548185, -122.5773134)
+)
+
+# Join and replace missing values
+df_fixed <- stream_cords %>%
+  left_join(fix_data, by = "Site_ID", suffix = c("", ".fix")) %>%
+  mutate(
+    Lat = if_else(is.na(Lat), Lat.fix, Lat),
+    Lon = if_else(is.na(Lon), Lon.fix, Lon)
+  ) %>%
+  dplyr::select(-Lat.fix, -Lon.fix)
+
+river_metab_dat <- river_metab_matched %>%
+  left_join(df_fixed, by = c("Site_ID" = "Site_ID"))
+
+river_metab_dat <- as.data.frame(river_metab_dat)
+
+river_metab_dat <-  river_metab_dat %>%
+  mutate(week=week(date),
+         year = year(date))
+
+# RDS save 
+# 
+# med_fill <-  river_metab_dat %>%
+#   mutate(week=week(date))%>%
+#   group_by(Site_ID, week, year, Lat, Lon) %>%
+#   summarise(weekly_med = median(GPP_filled, na.rm=T),
+#             weekly_er = median(ER_filled, na.rm=T))
+# 
+# river_metab_dat_filled <- river_metab_dat %>%
+#   left_join(med_fill, by = c("Site_ID", "week", "year", "Lat", "Lon")) %>%
+#   mutate(GPP_filled = ifelse(is.na(GPP_filled), weekly_med, GPP_filled),
+#          ER_filled = ifelse(is.na(ER_filled), weekly_er, ER_filled)) %>%
+#   dplyr::select(-weekly_med)
+
+```

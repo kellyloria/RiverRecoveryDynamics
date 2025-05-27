@@ -336,6 +336,36 @@ plot_Sample_Temporal_Coverage_yr
 
 ```
 
+### cut the threshold at 280 days 
+
+```{r, echo=FALSE, include=T, warning=FALSE, fig.width=10, fig.height=8}
+RR_datT <- RR_dat %>% 
+  group_by(Site_ID, year) %>% 
+  summarise(N_ob = sum(!is.na(GPP)), .groups = "drop") %>%
+  filter(N_ob>280) %>% 
+  ggplot(aes(x = year, y = Site_ID, color = N_ob)) +
+  geom_line(size = 3) +
+  scale_color_viridis_c(name = "N Observations") +
+  labs(x = "Year", y = "Site ID") +
+  theme_bw() +
+  theme(text = element_text(size = 10))
+
+
+
+RR_datT <- RR_dat %>% 
+  group_by(Site_ID, year) %>% 
+  summarise(N_ob = sum(!is.na(GPP)), .groups = "drop") %>%
+  filter(N_ob>280) %>% 
+  ggplot(aes(x = year, y = N_ob, color = Site_ID)) +
+  geom_bar() +
+  scale_color_viridis_d(name = "N Observations") +
+  labs(x = "Year", y = "Site ID") +
+  theme_bw() +
+  theme(text = element_text(size = 10))
+
+
+```
+
 
 ### Temporal resolution of lake metabolism data:
 
