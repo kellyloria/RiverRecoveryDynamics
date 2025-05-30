@@ -149,12 +149,43 @@ dat_NHDinfo1 <- within(dat_NHDinfo1, {
 unique(dat_NHDinfo1$state)
 
 
+####
+####
+
+COMID <- Info$COMID
+
+library(nhdplusTools)
+
+### Get stream order:
+flowline_attrs <- subset_nhdplus(
+  comids = COMID,
+  output_file = NULL,
+  return_data = TRUE,
+  nhdplus_data = "download"
+)
+
+df <- flowline_attrs$NHDFlowline_Network
+
+filtered_df <- df %>% 
+  filter(comid %in% COMID)
+
+filtered_df1 <- sf::st_drop_geometry(filtered_df)
+
+filtered_df1 <- as.data.frame(filtered_df1)
+
+library(dplyr)
+
+# Left join (all rows from filtered_df1, matching from dat_NHDinfo1)
+joined_df <- left_join(filtered_df1, dat_NHDinfo1, by = c("comid" = "COMID"))
+
+
+
 
 
 ## ---------------------------
-# saveRDS(dat_NHDinfo1, "/Users/kellyloria/Documents/River_Recovery_Dynamics_Analysis/data/Metab_metadata_25.rds")
+# saveRDS(joined_df, "/Users/kellyloria/Documents/River_Recovery_Dynamics_Analysis/data/Metab_metadata_25v2.rds")
 
-dat_NHDinfo1<- readRDS("/Users/kellyloria/Documents/River_Recovery_Dynamics_Analysis/data/Metab_metadata_25.rds")
+dat_NHDinfo1<- readRDS("/Users/kellyloria/Documents/River_Recovery_Dynamics_Analysis/data/Metab_metadata_25v2.rds")
 
 nlcd_BEDPERM <- read.csv("/Users/kellyloria/Documents/UNR/Course\ work/Fall2020Projects/NHD_Tools/NHD_AttributeFiles/BEDPERM_ACC_CONUS.TXT")
 head(nlcd_BEDPERM)
@@ -244,4 +275,100 @@ watershedplot <- fviz_pca_biplot(pca, geom.var = '', geom.ind = 'point', title =
 combined_plot <- ggarrange(watershed_loadplot, watershedplot, ncol = 2, nrow = 1)
 
 # ggsave(plot = combined_plot, filename = paste("/Users/kellyloria/Documents/River_Recovery_Dynamics_Analysis/figures/Watershed_attributes_25.png",sep=""),width=12,height=4.5,dpi=300)
+
+
+
+
+
+#####
+
+
+
+# Filter relevant columns (Example: columns 8:47 as mentioned)
+ws_smry <- dat_NHDinfo1 %>% dplyr::select(state, COMID, 46:53, 56:57, 78:80)
+
+str(ws_smry)
+
+
+ws_smry1 <- dat_NHDinfo1 %>% dplyr::select(state, COMID, 49:58, 65, 71, 72, 79,81)
+
+
+
+summary(ws_smry)
+
+domains <- ws_smry$state
+
+# Prepare data for PCA by removing non-numeric and non-relevant columns
+pca_data <- ws_smry %>% 
+  dplyr::select(-state, -COMID) %>% 
+  dplyr::select(where(~ sd(., na.rm = TRUE) != 0)) %>%  # Drop columns with no variance
+  as.matrix()
+
+# Categorize summary columns based on their initial patterns
+col_patterns <- c("alt_va" = "elevation", "drain_area_va" = "drainage_area", "Water_Open_pct" = "water",
+                  "Ice_Snow_Perennial_pct" = "ice_snow", "Developed_OpenSpace_pct" = "open_space",
+                  "Developed_LowIntensity_pct" = "open_space", "Developed_MedIntensity_pct" = "developed",
+                  "Developed_HiIntensity_pct" = "developed", "Barren_Land_pct" = "open_space",
+                  "Forest_Deciduous_pct" = "forest", "Forest_Evergreen_pct" = "forest", 
+                  "Forest_mixed_pct" = "forest", "Shrub_Scrub_pct" = "shrub", 
+                  "Grass_landHerbaceous_pct" = "shrub", "Grass_PastureHay_pct" = "crops", 
+                  "Cultivated_Crops_pct" = "crops", "Wetlands_Woody_pct" = "wetlands", 
+                  "Wetlands_EmergentHerb_pct" = "wetlands", "geol_gneiss" = "geology_metamorphic", 
+                  "geol_granitic" = "geology_igneous", "geol_ultramafic" = "geology_metamorphic", 
+                  "geol_quarternary" = "geology_sedimentary", "geol_sedimentary" = "geology_sedimentary", 
+                  "geol_volcanic" = "geology_igneous", "geol_intermediate_pultonic" = "geology_igneous", 
+                  "CAT_BASIN_AREA" = "drainage_area", "CAT_BASIN_SLOPE" = "slope", 
+                  "CAT_ELEV_MEAN" = "elevation", "CAT_ELEV_MIN" = "elevation", 
+                  "CAT_ELEV_MAX" = "elevation", "CAT_STREAM_SLOPE" = "slope", 
+                  "CAT_STREAM_LENGTH" = "stream_length", "road_Rural_den" = "road_density", 
+                  "road_private_den" = "road_density", "road_Total_den" = "road_density", 
+                  "Tree_Canopyin100mRip" = "shading")
+
+# Apply the categorization to column names
+smry_categories <- factor(sapply(colnames(pca_data), function(col) {
+  col_patterns[col]
+}))
+
+
+pca <- prcomp(pca_data, center = TRUE, scale. = TRUE)
+screeplot(pca)
+
+library(factoextra)
+
+# Visualize PCA eigenvalues
+scree_plt <- fviz_eig(pca)
+
+# ggsave(plot = scree_plt, filename = paste("/Users/kellyloria/Documents/River_Recovery_Dynamics_Analysis/figures/Watershed_attributes_screeplt_25.png",sep=""),width=4,height=3.5,dpi=300)
+
+
+biplot(prcomp(pca_data, center = TRUE, scale. = TRUE))
+
+
+# Visualize PCA biplot with variable categories
+watershed_loadplot<- fviz_pca_biplot(pca, geom.var = 'arrow', geom.ind = 'point', title = '',
+                                     col.var = smry_categories)
+
+# Visualize PCA biplot with site domains
+watershedplot <- fviz_pca_biplot(pca, geom.var = '', geom.ind = 'point', title = '',
+                                 col.ind = as.factor(domains))
+
+combined_plot <- ggarrange(watershed_loadplot, watershedplot, ncol = 2, nrow = 1)
+
+###
+library(randomForest)
+
+# Prepare data: assuming ws_smry contains 'synchrony' column
+rf_data <- ws_smry[, c("Developed_OpenSpace_pct", "Developed_LowIntensity_pct",
+                       "Developed_MedIntensity_pct", "Developed_HiIntensity_pct",
+                       "Barren_Land_pct", "Forest_Deciduous_pct",
+                       "Forest_Evergreen_pct", "Forest_mixed_pct",
+                       "Grass_PastureHay_pct", "Cultivated_Crops_pct",
+                       "road_Rural_den", "road_private_den", "road_Total_den")]
+
+rf_model <- randomForest(synchrony ~ ., data = data.frame(synchrony = ws_smry$synchrony, rf_data),
+                         importance = TRUE, ntree = 1000)
+
+# Plot importance
+varImpPlot(rf_model)
+
 
