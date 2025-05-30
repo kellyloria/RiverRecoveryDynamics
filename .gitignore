@@ -25,9 +25,8 @@
 # knitr and R markdown default cache directories
 *_cache/
 /cache/
-*_files/
 /files/
-*Lotic_synch_spline_correlogram_files/
+*/Lotic_synch_spline_correlogram_files/
 # Temporary files created by R markdown
 *.utf8.md
 *.knit.md
@@ -41,5 +40,5 @@ po/*~
 rsconnect/
 #.qmd stuff
 figure-revealjs/
-Lotic_synch_files/
+/Lotic_synch_files/
 *.png
