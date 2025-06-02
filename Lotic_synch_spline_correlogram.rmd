@@ -2042,7 +2042,7 @@ watershed_loadplot_LC <- fviz_pca_biplot(pca_LC, geom.var = 'arrow', geom.ind = 
                 col.var = smry_categories)
 
 watershed_loadplot_LC
-# ggsave(plot = watershed_loadplot_LC, filename = paste("/Users/kellyloria/Documents/River_Recovery_Dynamics_Analysis/figures/Watershed_attributes_load_LC_25.png",sep=""),width=5,height=3.5,dpi=300)
+# ggsave(plot = watershed_loadplot_LC, filename = paste("/Users/kellyloria/Documents/River_Recovery_Dynamics_Analysis/figures/Watershed_attributes_load_LC_25.png",sep=""),width=3.5,height=3,dpi=300)
 
 
 ```
@@ -2614,7 +2614,7 @@ watershed_loadplot_geol<- fviz_pca_biplot(pca_geol, geom.var = 'arrow', geom.ind
 
 watershed_loadplot_geol
 
-# ggsave(plot = watershed_loadplot_geol, filename = paste("/Users/kellyloria/Documents/River_Recovery_Dynamics_Analysis/figures/Watershed_attributes_load_geol_25.png",sep=""),width=5,height=3.5,dpi=300)
+# ggsave(plot = watershed_loadplot_geol, filename = paste("/Users/kellyloria/Documents/River_Recovery_Dynamics_Analysis/figures/Watershed_attributes_load_geol_25.png",sep=""),width=4,height=3,dpi=300)
 
 ```
 
@@ -3178,7 +3178,7 @@ watershed_loadplot_basin<- fviz_pca_biplot(pca_basin, geom.var = 'arrow', geom.i
 
 watershed_loadplot_basin
 
-# ggsave(plot = watershed_loadplot_basin, filename = paste("/Users/kellyloria/Documents/River_Recovery_Dynamics_Analysis/figures/Watershed_attributes_load_basin_25.png",sep=""),width=5,height=3.5,dpi=300)
+# ggsave(plot = watershed_loadplot_basin, filename = paste("/Users/kellyloria/Documents/River_Recovery_Dynamics_Analysis/figures/Watershed_attributes_load_basin_25.png",sep=""),width=4,height=3,dpi=300)
 
 ```
 
@@ -3677,7 +3677,7 @@ GPP_synch_spline_BC,
   legend = "right",
   align = "v")
 
-spline_grid
+spline_grid_landscape
 ```
 
 ```{r, warning=F, size = 'small', echo=F, include=FALSE}
@@ -5832,6 +5832,6 @@ spline_grid2
 ```
 
 ```{r, warning=F, size = 'small', echo=F, include=FALSE}
-# ggsave("/Users/kellyloria/Documents/River_Recovery_Dynamics_Analysis/figures/Finescale_spline_correlogram.png", plot = spline_grid2, width =9.5, height = 7, units = "in")
+# ggsave("/Users/kellyloria/Documents/River_Recovery_Dynamics_Analysis/figures/Finescale_spline_correlogram.png", plot = spline_grid2, width =5, height = 7, units = "in")
 
 ```
