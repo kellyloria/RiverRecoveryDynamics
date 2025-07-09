@@ -1,116 +1,101 @@
 fill_and_normalize_metab_ER <- function(df) {
-  
-  # source in functions
-  source('/Users/kellyloria/Documents/River_Recovery_Dynamics_Analysis/RiverRecoveryDynamics/data_structure_fxn/fillMiss3.R')
-  source('/Users/kellyloria/Documents/River_Recovery_Dynamics_Analysis/RiverRecoveryDynamics/data_structure_fxn/znorm.R')
-  
-  # define the number of sites
-  sites <- unique(df$site)
-  
-  # and years
-  years <- unique(df %>% 
-                    dplyr::mutate(year = lubridate::year(date)) %>% 
-                    dplyr::pull(year))
-  
-  # create a data frame to loop around and to build out as a summary table
-  df_NA <- data.frame(site = rep(sites, each = length(years)),
-                      year = rep(years, times = length(sites)))
-  
-  # where to save output data
-  out <- list()
-  
-  # build for loop around site-year (or rows in our tracker data frame)
-  for(i in 1:nrow(df_NA)) {
-    
-    # extract the row of interest
-    deets <- df_NA[i,]
-    
-    # and its site and year
-    site <- deets['site']
-    year <- deets['year']
-    
-    # filter the larger data frame to this site-year
-    df_use <- df %>% 
-      dplyr::mutate(year = lubridate::year(date)) %>% 
-      dplyr::filter(site %in% !!site,
-                    year %in% !!year)
-    
-    # if this results in an empty data frame, we record that and go to the next step in the loop
-    if(nrow(df_use) == 0){
-      df_NA[i, 'start_date'] <- NA
-      df_NA[i, 'per_NA'] <- NA
-      df_NA[i, 'complete_year'] <- FALSE
-      next
-    }
-    
-    # pad out the number of days
-    ## the cleaned and filtered model outputs (river_metab in the Rmd) takes away the 'bad' or missing days
-    ## the padr::pad() function expands the time series back to Jan 1 of the given year by day
-    df_pad <- df_use %>% 
-      padr::pad(start_val = lubridate::date(glue::glue("{year}-01-01")),
-                end_val = lubridate::date(glue::glue("{year}-12-31")),
-                'day') %>% 
-      tidyr::fill(site, resolution, year, 
-                  .direction = 'downup')
-    
-    # with the padded dataset
-    ## whats the start date (of ER, not padded ER)
-    start_date <- df_pad %>% 
-      dplyr::filter(!is.na(ER)) %>% 
-      dplyr::pull(date) %>% 
-      dplyr::first()
-    
-    end_date <- df_pad %>% 
-      dplyr::filter(!is.na(ER)) %>% 
-      dplyr::pull(date) %>% 
-      dplyr::last()
-    
-    # how many NAs are there (# and percent)
-    NAs <- sum(is.na(df_pad$ER))
-    per_NA <- round(NAs/length(df_pad$ER)*100, digits = 2)
-    
-    # record these values in our tracker dataframe
-    df_NA[i, 'start_date'] <- start_date
-    df_NA[i, 'per_NA'] <- per_NA
-    
-    # now that we've padded the dataset, we should be able to gap fill for all time points
-    # however, this is an issue if there is a large gap at the start or end of the time series (ie early or late in the year)
-    ## the gap fill model below takes the first estimates of ER and back calculates in time what it thinks. But we know rivers are highly seasonal and this can be a bad approach
-    # this if statement checks if the first date of ER measurements is within the first 90 days of the padded dataset
-    ## if there is >90 missing days at the start, we don't gap fill
-    ### this is a subjective call and maybe worth exploring the window here a bit. 90 days roughly corresponds to 25% of a year
-    if(!start_date %in% seq(dplyr::pull(df_pad[1,'date']),dplyr::pull(df_pad[90,'date']), by = 1) ||
-       !end_date %in% seq(dplyr::pull(df_pad[nrow(df_pad) - 90,'date']),dplyr::pull(df_pad[nrow(df_pad),'date']), by = 1)){
-      df_NA[i, 'complete_year'] <- FALSE
-      next
-    } else {
-      df_NA[i, 'complete_year'] <- TRUE
-    }
-    
-    # here we gap fill
-    ## we are catching if (somehow) a dataset with >40% missing data has passed through and ignore. 40% missing (or 60% data) is the thresold used in Bernhardt et al. (2022) and we use that here
-    ## the block and pmiss parameters also address the size and amount of gaps, but are accounted for upstream in the code
-    # the fillMiss3 function has roots in github.com/USGS-R/waterData/fillMiss (https://github.com/USGS-R/waterData), modified by Bernhardt et al. (2022, PNAS)
-    ## the function looks for the number and sizes of gaps such that they meet the criteria defined and fit and smooth missing data through a structural state-space time series model (tsSmooth)
-    # gap filling methods are many and come with pros and cons. We apply this method given use on similar data (Bernhardt et al. 2022, PNAS)
-    if(per_NA < 40){
-      df_pad$ER_filled <- fillMiss3(dataset = data.frame(df_pad), 
-                                     var = 'ER', 
-                                     block = 125,
-                                     pmiss = 40, 
-                                     plot = FALSE)
-      
-      out[[i]] <- df_pad
-      
-    } # end if statement
-    
-  } # end  for loop
-  
-  # print and save the tracker
-  readr::write_csv(df_NA,
-                   '/Users/kellyloria/Documents/River_Recovery_Dynamics_Analysis/data/doi_10_5061_dryad_bcc2fqzj2__v20230622/data_citation/summary_site-year_NAs.csv')
-  
-  # return the compiled object
-  out <- do.call(rbind, out)
 
-} # end function
+    # source in functions
+    source('/Users/kellyloria/Documents/River_Recovery_Dynamics_Analysis/RiverRecoveryDynamics/data_structure_fxn/fillMiss3.R')
+    source('/Users/kellyloria/Documents/River_Recovery_Dynamics_Analysis/RiverRecoveryDynamics/data_structure_fxn/znorm.R')
+    
+    # define the number of sites and years
+    sites <- unique(df$site)
+    years <- unique(df %>% dplyr::mutate(year = lubridate::year(date)) %>% dplyr::pull(year))
+    
+    # create summary tracking dataframe with correctly typed NA values
+    df_NA <- data.frame(
+      site = rep(sites, each = length(years)),
+      year = rep(years, times = length(sites)),
+      total_days = as.integer(NA),
+      num_NA_before = as.integer(NA),
+      num_NA_after = as.integer(NA),
+      num_infilled = as.integer(NA),
+      start_date = as.Date(NA),
+      per_NA = as.numeric(NA),
+      complete_year = as.logical(NA)
+    )
+    
+    # storage for filled output
+    out <- list()
+    
+    for (i in 1:nrow(df_NA)) {
+      
+      # get site-year
+      deets <- df_NA[i, ]
+      site <- deets$site
+      year <- deets$year
+      
+      # filter to site-year
+      df_use <- df %>%
+        dplyr::mutate(year = lubridate::year(date)) %>%
+        dplyr::filter(site == !!site, year == !!year)
+      
+      if (nrow(df_use) == 0) {
+        df_NA[i, c("start_date", "per_NA", "complete_year")] <- list(NA, NA, FALSE)
+        next
+      }
+      
+      # pad to full year
+      df_pad <- df_use %>%
+        padr::pad(start_val = lubridate::date(glue::glue("{year}-01-01")),
+                  end_val = lubridate::date(glue::glue("{year}-12-31")),
+                  interval = "day") %>%
+        tidyr::fill(site, resolution, year, .direction = "downup")
+      
+      # record total days
+      df_NA[i, "total_days"] <- nrow(df_pad)
+      
+      # count NAs before filling
+      NAs_before <- sum(is.na(df_pad$ER))
+      df_NA[i, "num_NA_before"] <- NAs_before
+      per_NA <- round(NAs_before / nrow(df_pad) * 100, 2)
+      df_NA[i, "per_NA"] <- per_NA
+      
+      # find first/last non-NA dates
+      start_date <- df_pad %>% dplyr::filter(!is.na(ER)) %>% dplyr::pull(date) %>% dplyr::first()
+      end_date <- df_pad %>% dplyr::filter(!is.na(ER)) %>% dplyr::pull(date) %>% dplyr::last()
+      df_NA[i, "start_date"] <- start_date
+      
+      # assess if year is complete
+      if (!start_date %in% seq(df_pad$date[1], df_pad$date[90], by = 1) ||
+          !end_date %in% seq(df_pad$date[nrow(df_pad) - 90], df_pad$date[nrow(df_pad)], by = 1)) {
+        df_NA[i, "complete_year"] <- FALSE
+        next
+      } else {
+        df_NA[i, "complete_year"] <- TRUE
+      }
+      
+      # gap-fill if acceptable NA%
+      if (per_NA < 40) {
+        df_pad$ER_filled <- fillMiss3(dataset = data.frame(df_pad), 
+                                       var = 'ER', 
+                                       block = 125,
+                                       pmiss = 40, 
+                                       plot = FALSE)
+        
+        NAs_after <- sum(is.na(df_pad$ER_filled))
+        df_NA[i, "num_NA_after"] <- NAs_after
+        df_NA[i, "num_infilled"] <- NAs_before - NAs_after
+        
+        out[[i]] <- df_pad
+      } else {
+        df_NA[i, c("num_NA_after", "num_infilled")] <- list(NA, NA)
+      }
+      
+    } # end for loop
+    
+    # write the full df_NA to disk
+    readr::write_csv(df_NA,
+                     '/Users/kellyloria/Documents/River_Recovery_Dynamics_Analysis/data/doi_10_5061_dryad_bcc2fqzj2__v20230622/data_citation/summary_site-year_NAs_ER.csv')
+    
+    # return the compiled object
+    out <- do.call(rbind, out)
+    return(out)
+  }
+  
