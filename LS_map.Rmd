@@ -1,0 +1,314 @@
+---
+title: "River synch map"
+author: "K. Loria"
+date: "`r Sys.Date()`"
+output:
+   html_document:
+    theme: simplex
+    highlight: tango
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+```{=html}
+<style type="text/css">
+body, td {font-size: 13px;}
+code.r{font-size: 9px;}
+pre {font-size: 11px}
+</style>
+```
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(warning = F, message = F)
+knitr::opts_knit$set(root.dir = '/Users/kellyloria/Documents/')
+def.chunk.hook  <- knitr::knit_hooks$get("chunk")
+knitr::knit_hooks$set(chunk = function(x, options) {
+  x <- def.chunk.hook(x, options)
+  ifelse(options$size != "normalsize", paste0("\n \\", options$size,"\n\n", x, "\n\n \\normalsize"), x)
+})
+
+```
+
+```{r, echo=FALSE, include=FALSE}
+library(data.table) # Allows fast reading and writing of files
+library(ggplot2)    # For plotting
+library(tidyverse)  # For data processing
+library(lubridate)  # For date processing
+library(reshape2)   # For reshaping the data into long format
+library(ncf)        # For Synchrony analysis
+library(grid)       # for labeling the gridded plot
+library(gridExtra)  # for creating a labeled, gridded plot
+library(FSA)        # For making depletion estimates
+library(knitr)      # For making tidy tables
+library(broom)
+library(grid)
+
+
+## map packages 
+
+library(tidyverse)
+library(ggrepel)
+library(ggmap)
+library(ggsci)
+library(scales)
+
+library(dplyr)
+library(ggplot2)
+library(ggrepel)
+
+
+#devtools::install_github("briatte/tidykml")
+library(tidykml)
+library(sf)
+
+```
+
+
+
+```{r, warning=F, size = 'small', echo=FALSE, include=FALSE}
+### Marzolf workflow parameters 
+# define constants and axis labels
+metab_units_area <- (expression(paste('GPP (g C', m^-2,' ',y^-1,')', sep = ' ')))
+
+low_p <- '#6e2f9e'
+high_p <- '#f4e6ff'
+
+# quotient to convert GPP from O2 to C
+# g C = g O2 * (1 mol O2/32 g O2) * (2 mol O/1 mol O2) * (1 mol C/1 mol O) * (12 g C/1 mol 
+
+rq <- (1/32)*(2/1)*(1/1)*(12/1)
+
+## check this to see what a better assumption would be ?
+rq_e <- 1
+
+# where to save figures
+save_figs <- TRUE
+dpi <- 400
+
+```
+
+
+```{r, echo=FALSE, include=T, warning=FALSE, fig.width=12, fig.height=8}
+# https://github.com/gpvalentine/SE_Trout/blob/main/Analysis/SE_Trout_Correlograms.R
+
+river_metab_dat <-readRDS("/Users/kellyloria/Documents/River_Recovery_Dynamics_Analysis/data/stream_spline_cor_df.rds") %>% mutate(GPP_filled = if_else(GPP_filled <= 0, 0.0001, GPP_filled),
+          ER_filled = if_else(ER_filled >= 0, -0.0001, ER_filled))
+
+
+sites_keep <- read.csv("/Users/kellyloria/Documents/River_Recovery_Dynamics_Analysis/figures/Map_data_for_nested_reach.csv")%>%
+  filter(keep == 1) %>%
+  dplyr::select(Site_ID:stream_order)
+
+
+# Filter river_metab_dat to keep only Site_IDs in sites_keep
+river_metab_dat <- river_metab_dat %>%
+  filter(Site_ID %in% sites_keep$Site_ID)
+
+unique(river_metab_dat$Site_ID)
+
+```
+
+
+
+```{r, size='large', echo=F, include=F, warning=FALSE, fig.width=12, fig.height=8}
+
+dat_NHDinfo<- readRDS("/Users/kellyloria/Documents/River_Recovery_Dynamics_Analysis/data/Metab_metadata_25v2.rds")%>%
+  mutate(Site_ID = str_remove(site_no, "^0+"))
+
+river_metab_dat1 <- river_metab_dat%>%
+  left_join(dat_NHDinfo, by=c("Site_ID")) 
+
+## fix some missing id
+
+river_metab_dat1 <- river_metab_dat1 %>%
+  mutate(station_nm = if_else(is.na(station_nm) & Site_ID == 71912213,
+                              "Spavinaw Creek near Colcord, OK",
+                              station_nm),
+         streamorde =if_else(is.na(streamorde) & Site_ID == 71912213,
+                             3,
+                             streamorde), 
+         state =if_else(is.na(state) & Site_ID == 71912213,
+                             "OK",
+                             state)) %>%
+  mutate(
+    stream_class = case_when(
+      streamorde %in% c(1, 2) ~ "small",
+      streamorde %in% c(3, 4) ~ "medium",
+      streamorde > 4         ~ "large",
+      TRUE                     ~ NA_character_  # for any unexpected or missing values
+    )
+  )
+
+unique(river_metab_dat1$station_nm)
+
+```
+
+
+
+
+```{r, warning=F, size = 'small', echo=F, include=T, include=F}
+
+# Define the bounding box coordinates add some wiggle room:
+
+range(na.omit(river_metab_dat$Lon))
+range(river_metab_dat$Lat)
+# 
+# Define the bounding box coordinates
+bbox <- c(left = -126.200, bottom = 25.00, right = -70.900, top = 47.50)
+
+# Retrieve terrain map layer using get_stamenmap()
+map <- get_stadiamap(bbox = bbox, zoom = 5, maptype = 'stamen_terrain_background')
+# need api run for the first time
+
+#library(ggmap)
+# Plot the terrain map
+stamen_map <- ggmap(map)
+```
+
+```{r, warning=F, echo=F, include=F,  fig.width=18, fig.height=14}
+river_metab_dat_map <- river_metab_dat1 %>%
+  dplyr::group_by(Site_ID, Lon, Lat, station_nm, streamorde,stream_class, state) %>%
+  summarise(
+    GPP_am = mean(GPP_filled, na.rm=T),
+    ER_am = mean(ER_filled, na.rm=T))%>%
+  mutate(
+    NEP_am = c(GPP_am + ER_am))
+
+
+coords_map <- ggmap(map) +
+  geom_point(data = river_metab_dat_map, aes(x = Lon, y = Lat, fill = GPP_am, shape = stream_class), size = 2) +
+  geom_label_repel(data = river_metab_dat_map, aes(x = Lon, y = Lat, label = state,  fill = GPP_am), color= "black", fontface = "bold", size = 3, max.overlaps = 50) +
+  xlab("Longitude") + ylab("Latitude") + theme_bw() +
+#  scale_color_viridis_c(option = "viridis",  name = "Mean NEP", alpha = 0.75)  +
+ #scale_fill_viridis_c(option = "viridis",  name = "Mean NEP", alpha = 0.75)  +
+      scale_fill_gradient(name = metab_units_area,
+                       low = low_p,
+                       high = high_p) +
+    scale_color_gradient(name = metab_units_area,
+                       low = low_p,
+                       high = high_p) +
+
+    scale_shape_manual(values = c(21, 22, 25)) +
+  # Add the scale bar
+  theme(
+    axis.text = element_text(size = 16),
+    axis.title = element_text(size = 16, colour = "black", face = "bold"),
+    panel.border = element_rect(size = 1.5, colour = "black"),
+    legend.text = element_text(size = 16),
+    legend.title = element_text(size = 16, face = "bold"),
+    panel.grid = element_blank()
+  )
+coords_map
+```
+
+```{r, warning=F, size = 'small', echo=F, include=F, fig.width=6, fig.height=4}
+# ggsave("/Users/kellyloria/Documents/River_Recovery_Dynamics_Analysis/figures/Lotic_sych_Fig1_a.png", plot = coords_map, width = 11, height = 5, units = "in")
+
+```
+
+
+
+
+
+
+
+## NEP box plot modifed from  marzolf - 
+```{r, warning=F, echo=T, include=T,  fig.width=18, fig.height=14}
+
+river_metab_dat_box <- river_metab_dat1 %>%
+  mutate(year = year(date)) %>%
+  dplyr::group_by(Site_ID, year, Lon, Lat, station_nm, stream_class) %>%
+  summarise(
+    GPP_am = median(GPP_filled, na.rm=T),
+    ER_am = median(ER_filled, na.rm=T))%>%
+  mutate(
+    NEP_am = c(GPP_am + ER_am))
+
+library(dplyr)
+library(ggplot2)
+library(forcats)
+
+
+river_metab_dat_box <- river_metab_dat_box %>%
+  mutate(
+    site_label_short = str_trim(
+      paste(
+        str_extract(station_nm, "^([^ ]+ ){0,1}[^ ]+"),             # first 4 words
+        ifelse(str_detect(station_nm, ","),                        # if a comma exists
+               paste0(",", str_trim(str_extract(station_nm, ",.*"))), # add text after comma
+               "")                                                 # else leave empty
+      )
+    )
+  )
+
+# First, create a factor reordering based on median NEP_am
+station_order <- river_metab_dat_box %>%
+  group_by(site_label_short) %>%
+  summarise(median_nep = median(NEP_am, na.rm = TRUE)) %>%
+  arrange(desc(median_nep)) %>%
+  pull(site_label_short)
+
+
+
+# Apply the reordering
+river_metab_dat_box <- river_metab_dat_box %>%
+  mutate(site_label_short = factor(site_label_short, levels = station_order))
+
+
+fig_2_b <- ggplot(river_metab_dat_box,
+                  aes(x = site_label_short, y = NEP_am)) +
+  geom_boxplot(aes(fill = NEP_am), width = 0.75, outlier.shape = NA, show.legend = FALSE) +
+  geom_point(aes(color = NEP_am, shape=stream_class), size = 2) +
+  coord_flip() +
+  scale_y_continuous(name = metab_units_area, 
+                       expand = expansion(mult = c(0, 0.05))) +
+  scale_fill_gradient(name = metab_units_area, low = low_p, high = high_p) +
+  scale_color_gradient(name = metab_units_area, low = low_p, high = high_p) +
+  theme_classic() +
+  theme(
+    axis.text.y = element_text(angle = 0, size = 8, hjust = 0.95, vjust = 0.2),
+    axis.title.y = element_blank(),
+    legend.position = "none")
+
+
+
+```
+
+
+```{r, warning=F, size = 'small', echo=F, include=F, fig.width=6, fig.height=4}
+# ggsave("/Users/kellyloria/Documents/River_Recovery_Dynamics_Analysis/figures/Lotic_sych_Fig1_b.png", plot = fig_2_b, width = 6.9, height = 6, units = "in")
+
+```
+
+
+### FIG 1
+
+- stream order: 1 or 2 ~ "small"
+
+- stream order: 3 or 4 ~ "medium"
+
+- stream order: > 4 ~ "large"
+
+```{r, warning=F, echo=F, include=T,  fig.width=15, fig.height=18}
+library(ggpubr)
+Fig1_grid <- ggarrange(
+  coords_map,
+  fig_2_b,
+  ncol = 1, nrow = 2,
+  labels = c("a", "b"),
+  #common.legend = F, 
+  #legend = "right",
+  heights = c(1.5, 1),
+  align = "v"
+)
+Fig1_grid
+```
+
+```{r, warning=F, size = 'small', echo=F, include=F, fig.width=6, fig.height=4}
+# ggsave("/Users/kellyloria/Documents/River_Recovery_Dynamics_Analysis/figures/Lotic_sych_Fig1.png", plot = Fig1_grid, width = 10.5, height = 15, units = "in")
+
+```
+
+

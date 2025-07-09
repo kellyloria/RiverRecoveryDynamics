@@ -1,0 +1,5 @@
+,time_scale,parameter,y,,mean_synch,cbar
+1,daily,GPP,0.40,0.01,0.23,807
+2,daily_Neast,GPP,0.43,-0.01,0.26,909
+3,daily_Seast,GPP,0.38,0.03,0.2,698
+4,daily_east,GPP,0.41,0.01,0.21,991

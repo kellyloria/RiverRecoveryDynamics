@@ -264,7 +264,7 @@ in the fxn
 new_dat <- filtered_data %>%
   dplyr::select(site:shortwave)
 
-river_metab_filled <- fill_and_normalize_metab(new_dat)
+river_metab_filled <- fill_and_normalize_metab1(new_dat)
 head(river_metab_filled)
 
 ggplot(data = river_metab_filled) +

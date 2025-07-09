@@ -1,0 +1,2371 @@
+---
+title: "Part 3. Spline Correlogram analysis for synchrony in aquatic ecosystem productivity - Lanscape position"
+author: "K. Loria"
+date: "`r Sys.Date()`"
+output:
+   html_document:
+    theme: simplex
+    highlight: tango
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+```{=html}
+<style type="text/css">
+body, td {font-size: 13px;}
+code.r{font-size: 9px;}
+pre {font-size: 11px}
+</style>
+```
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(warning = F, message = F)
+knitr::opts_knit$set(root.dir = '/Users/kellyloria/Documents/')
+def.chunk.hook  <- knitr::knit_hooks$get("chunk")
+knitr::knit_hooks$set(chunk = function(x, options) {
+  x <- def.chunk.hook(x, options)
+  ifelse(options$size != "normalsize", paste0("\n \\", options$size,"\n\n", x, "\n\n \\normalsize"), x)
+})
+
+```
+
+```{r, echo=FALSE, include=FALSE}
+library(data.table) # Allows fast reading and writing of files
+library(ggplot2)    # For plotting
+library(tidyverse)  # For data processing
+library(lubridate)  # For date processing
+library(reshape2)   # For reshaping the data into long format
+library(ncf)        # For Synchrony analysis
+library(grid)       # for labeling the gridded plot
+library(gridExtra)  # for creating a labeled, gridded plot
+library(FSA)        # For making depletion estimates
+library(knitr)      # For making tidy tables
+library(broom)
+library(grid)
+
+```
+
+## Background: Synchrony estimates using Sncf{ncf}
+
+#### How it works:
+
+Sncf computes the nonparametric spatial (auto/cross-)correlation
+function for multivariate time series data observed across spatial
+locations.
+
+1.  Takes time series data z from n locations (one row per location, one
+    column per time step).
+
+2.  Calculates the pairwise correlations between time series at each
+    location pair.
+
+3.  Bins those correlations based on distance between sites (using
+    latitude and longitude if latlon = TRUE).
+
+4.  Fits a smoothing spline to estimate the average correlation as a
+    function of distance
+    
+It can handle missing data, where:
+na.rm = TRUE: Missing values are allowed; only overlapping time steps are used in correlations.
+
+
+#### Metrics to consider:
+
+-   '\real$predicted\$y[1]' = Synchrony at (almost) zero distance –
+    often max synchrony.
+      
+      - This is the first predicted value from the fitted nonparametric spline of the spatial correlation function
+      
+      - Estimated synchrony at the smallest distance bin
+
+
+-   '\$y.intercept' = Extrapolated synchrony at exactly zero distance 
+      
+      - The theoretical synchrony among perfectly co-located sites
+
+-   '\$cbar' = Regional mean synchrony across all distances
+
+-   '\$x.intercept'	= Distance at which synchrony drops to 0
+
+-   '\$e.intercept' = Distance where synchrony drops to 1/e of max (decay scale)
+
+
+###  Fletcher, R., & Fortin, M. (2018):
+we should truncate the range of lag distances at which we consider spatial 
+dependence to approximately ½ to 2 = 3 the total distance observed.
+
+```{r, echo=FALSE, include=F, warning=FALSE, fig.width=12, fig.height=8}
+# https://github.com/gpvalentine/SE_Trout/blob/main/Analysis/SE_Trout_Correlograms.R
+
+river_metab_dat <-readRDS("/Users/kellyloria/Documents/River_Recovery_Dynamics_Analysis/data/stream_spline_cor_df.rds") %>% mutate(GPP_filled = if_else(GPP_filled <= 0, 0.0001, GPP_filled),
+          ER_filled = if_else(ER_filled >= 0, -0.0001, ER_filled))
+
+names(river_metab_dat)
+```
+
+```{r, echo=FALSE, include=F, warning=FALSE, fig.width=12, fig.height=8}
+### read in prism data for PPT
+
+PPT_dat <-readRDS("/Users/kellyloria/Documents/River_Recovery_Dynamics_Analysis/data/Clim_data/PRISM_stream.rds")%>%
+  mutate(Site_ID=as.character(Name))
+
+
+StreamLight_dat <- read.csv("/Users/kellyloria/Documents/River_Recovery_Dynamics_Analysis/data/doi_10_5061_dryad_bcc2fqzj2__v20230622/data_citation/7_river_light.csv") %>%
+  mutate(date = lubridate::as_date(date, format="%Y-%m-%d")) %>%
+  mutate(Site_ID1 = str_remove(site, "^nwis_")) %>%
+  mutate(Site_ID = str_remove(Site_ID1, "^0+"))
+
+
+river_metab_dat1 <- river_metab_dat%>%
+  left_join(PPT_dat, by=c("date"="Date", "Site_ID")) %>%
+  dplyr::select(site:TmaxC) 
+
+river_metab_dat1 <- river_metab_dat1%>%
+  left_join(StreamLight_dat, by=c("date", "site", "Site_ID"))
+
+intersect(unique(river_metab_dat1$site), unique(StreamLight_dat$site))
+
+
+setdiff(unique(river_metab_dat1$site), unique(StreamLight_dat$site)) # Sites in metab but not in light
+setdiff(unique(StreamLight_dat$site), unique(river_metab_dat1$site)) # Sites in light but not in metab
+
+
+
+sites_keep <- read.csv("/Users/kellyloria/Documents/River_Recovery_Dynamics_Analysis/figures/Map_data_for_nested_reach.csv")%>%
+  filter(keep == 1) %>%
+  dplyr::select(Site_ID:stream_order)
+
+
+# Filter river_metab_dat to keep only Site_IDs in sites_keep
+river_metab_dat1 <- river_metab_dat1 %>%
+  filter(Site_ID %in% sites_keep$Site_ID)
+
+unique(river_metab_dat1$Site_ID)
+```
+
+
+```{r, echo=FALSE, include=F, warning=FALSE, fig.width=12, fig.height=8}
+library(dplyr)
+library(geodist)
+
+# Get site centroids
+site_coords <- river_metab_dat1 %>%
+  group_by(Site_ID) %>%
+  summarise(Lat = mean(Lat), Lon = mean(Lon), .groups = "drop")
+
+# Calculate the overall mean coordinates
+mean_lat <- median(site_coords$Lat)
+mean_lon <- median(site_coords$Lon)
+
+# Find site closest to mean coordinates using geodist
+mean_coords <- data.frame(Lat = mean_lat, Lon = mean_lon)
+site_coords_df <- data.frame(Lat = site_coords$Lat, Lon = site_coords$Lon)
+
+distances_to_mean <- geodist(site_coords_df, mean_coords, measure = "geodesic") / 1000
+closest_index <- which.min(distances_to_mean)
+
+# Use the closest site as the reference
+ref_site <- site_coords[closest_index, ]
+
+# Compute distances from the reference site to all others
+ref_coords <- data.frame(Lat = ref_site$Lat, Lon = ref_site$Lon)
+distances_from_ref <- geodist(site_coords_df, ref_coords, measure = "geodesic") / 1000
+
+# Add distance column
+site_coords <- site_coords %>%
+  mutate(distance_km = as.numeric(distances_from_ref))
+
+hist(site_coords$distance_km)
+
+
+# Get 2/3 cut off 
+
+half_dist_km <- max(site_coords$distance_km)/ 2
+half_dist_km
+twothirds_dist_km <- max(site_coords$distance_km) * (2/3)
+twothirds_dist_km
+
+```
+
+## Part 1: Synchrony in metabolism at differnt timescales
+
+Compare synchrony for GPP and ER from 56 different sites in Marzolf
+dataset at different timescales:
+
+### A. GPP synchrony at differnt timescales:
+
+#### GPP- Daily synchrony
+
+```{r, warning=F, size = 'small', echo=T, include=T, cache=TRUE}
+
+#### Daily synchrony
+
+river_metab_dat<-as.data.frame(river_metab_dat1)
+
+GPP_long <- river_metab_dat1 %>%
+  group_by(Site_ID, date, Lat, Lon) %>%
+  summarise(GPP_filled = mean(GPP_filled, na.rm = TRUE), .groups = "drop")
+
+GPP_wide_day <- GPP_long %>%
+  pivot_wider(
+    names_from = date,
+    values_from = GPP_filled)
+
+# Now, calculate spatial Synchrony in the time series using the Sncf() function
+RR_df.corr_day <- Sncf(x=GPP_wide_day$Lon,
+                   y=GPP_wide_day$Lat,
+                   z=GPP_wide_day[,4:ncol(GPP_wide_day)],
+                   resamp = 1000, 
+                   latlon = T,
+                   na.rm = T) # allows for NA given each stream has 280 days per year
+
+plot(RR_df.corr_day)
+
+GPP_corrgram_summary.table <- summary(RR_df.corr_day)
+Regional.synch <- GPP_corrgram_summary.table$Regional.synch
+
+
+# Plot using ggplot for export
+# create a dataframe of the predicted values
+GPP.corr.pred.df.day <- data.frame(x = matrix(unlist(RR_df.corr_day$real$predicted$x)),
+                                             y = matrix(unlist(RR_df.corr_day$real$predicted$y)),
+                               time_scale = "daily",
+                               parameter = "GPP")
+
+## Sample average line
+GPP.corr.pred.df.day$mean_synch <- round(Regional.synch,2)
+Regional.synch_x <-  round(GPP_corrgram_summary.table$estimates["intercepts", "cbar"], 0)
+GPP.corr.pred.df.day$cbar <- Regional.synch_x
+
+# ...and a dataframe of the y values for the bootstrap prediction
+GPP.corr.bootValues.df <- as.data.frame(t(RR_df.corr_day$boot$boot.summary$predicted$y))
+
+# merge x and y values (min and max) for the bootstrap confidence intervals into a dataframe
+GPP.corr.boot.df.day <- data.frame(x = matrix(unlist(RR_df.corr_day$boot$boot.summary$predicted$x)),
+                                             yminGPP = GPP.corr.bootValues.df$`0.025`,
+                                             ymaxGPP = GPP.corr.bootValues.df$`0.975`,
+                               time_scale = "daily",
+                                  parameter = "GPP")
+
+
+
+```
+
+```{r, warning=F, size = 'small', echo=F, include=T, cache=TRUE}
+
+cat(paste0(
+  "$y.intercept: ", round(GPP_corrgram_summary.table$estimates["intercepts", "y"], 2), "\n",
+  "$Regional.synch: ", round(GPP_corrgram_summary.table$Regional.synch[1], 2), "\n",  
+  "$cbar: ", round(GPP_corrgram_summary.table$estimates["intercepts", "cbar"], 0), " km\n",
+  "$x.intercept: ", round(GPP_corrgram_summary.table$quantiles["0.5", "x"], 0), " km\n"
+))
+
+```
+
+
+## Part 2 - Moran Effect
+
+-   MODIS data for leaf area index (LAI)
+
+-   Daily streamflow (Q)
+
+-   Daily water temperature (water_temp)
+
+-   Daily air temp (air_temp)
+
+-   Daily precipitation (PPT)
+
+#### Bring in MODIS data for LAI to get at
+
+```{r, echo=FALSE, include=F, warning=FALSE, fig.width=12, fig.height=8}
+# https://github.com/gpvalentine/SE_Trout/blob/main/Analysis/SE_Trout_Correlograms.R
+
+LAI_dat <-readRDS("/Users/kellyloria/Documents/River_Recovery_Dynamics_Analysis/data/Modis_data/StreamDat_MOD_combined.rds")%>%
+  mutate(date=as.Date(Date)) %>%
+    filter(Site_ID %in% sites_keep$Site_ID)
+
+
+# intersect(unique(river_metab_dat1$Site_ID), unique(LAI_dat$Site_ID))
+# 
+# 
+# Metat_sites_notinlight <- setdiff(unique(river_metab_dat1$site), unique(StreamLight_dat$site)) # Sites in metab but not in light
+# Light_sites_notinmetab<- setdiff(unique(StreamLight_dat$site), unique(river_metab_dat1$site)) # Sites in light but not in metab
+# 
+# LAI_sites_notinlight<- setdiff(unique(LAI_dat$Site_ID), unique(StreamLight_dat$Site_ID)) # Sites in light but not in metab
+
+```
+
+## Part 3. Landscape level factors as explaining synchrony:
+
+A. left join time series dat with landscape parameters
+
+B. ER / GPP explained by stream size (via regression)
+
+i.  Dominant land cover explained by stream size
+
+
+iii. Slope/ Catchment size/ basin characteristics
+
+iv. Water temperature/ flow
+
+C. Create landscape level groups and then run synchronous
+
+i.  landcover (PCA? developed to forest?) - possibly cropland with
+    moderate development
+
+iii. Slope? or Catchment size
+
+iv. Water temperature/ depth/flow?
+
+<!-- -->
+
+5.  When landscape character explains some synchronous, visualize with
+    synch splines (Q1-Q3 for i to iv splines)
+
+```{r, size='large', echo=FALSE, include=F, warning=FALSE, fig.width=12, fig.height=8}
+
+dat_NHDinfo<- readRDS("/Users/kellyloria/Documents/River_Recovery_Dynamics_Analysis/data/Metab_metadata_25v2.rds")%>%
+  mutate(Site_ID = str_remove(site_no, "^0+"))
+
+river_metab_dat1 <- river_metab_dat1%>%
+  left_join(dat_NHDinfo, by=c("Site_ID")) 
+
+```
+
+#####  Random forest to get at what should describe National Land Cover Database
+
+```{r, size='large', echo=T, include=T, warning=FALSE, cache=TRUE, fig.width=12, fig.height=8}
+library(randomForest)
+
+# Prepare data for RF
+rf_LC_data <- river_metab_dat1[, c("Developed_OpenSpace_pct", "Developed_LowIntensity_pct",
+                                   "Tree_Canopyin100mRip", #"daily_LAI",
+                       "Developed_MedIntensity_pct", "Developed_HiIntensity_pct",
+                       "Barren_Land_pct", "Forest_Deciduous_pct",
+                       "Water_Open_pct", "Ice_Snow_Perennial_pct",
+                       "Shrub_Scrub_pct", "Grass_landHerbaceous_pct",
+                       "Forest_Evergreen_pct", "Forest_mixed_pct",
+                       "Grass_PastureHay_pct", "Cultivated_Crops_pct",
+                       "Wetlands_Woody_pct","Wetlands_EmergentHerb_pct",
+                       "road_Rural_den", "road_private_den", "road_Total_den")]
+
+
+rf_LC_input <- data.frame(GPP_synch = river_metab_dat1$GPP_filled, rf_LC_data)
+rf_LC_input_clean <- na.omit(rf_LC_input)
+
+# Now run the model
+rf_LC_model <- randomForest(GPP_synch ~ ., data = rf_LC_input_clean,
+                         importance = TRUE, ntree = 200)
+
+# Plot importance
+varImpPlot(rf_LC_model)
+
+# Get importance metrics from your existing model
+importance_vals <- randomForest::importance(rf_LC_model, type = 1)  # type = 1 for %IncMSE
+importance_df <- data.frame(variable = rownames(importance_vals),
+                            IncMSE = importance_vals[, 1])
+
+importance_df
+
+# Sort by importance and keep top 10
+top_vars_LC <- importance_df %>%
+  arrange(desc(IncMSE)) %>%
+  slice(1:20) %>%
+  pull(variable)
+
+top_vars_LC
+
+```
+
+###### Create the composite variables for land cover/geology/basin characteristics
+
+```{r, size='large', echo=FALSE, include=T, warning=FALSE, fig.width=6, fig.height=4}
+# Categorize summary columns based on their initial patterns
+col_patterns <- c("alt_va" = "reach morphology", "drain_area_va" = "drainage_area", "Water_Open_pct" = "water",
+                  "Ice_Snow_Perennial_pct" = "ice_snow", "Developed_OpenSpace_pct" = "open_space",
+                  "Developed_LowIntensity_pct" = "open_space", "Developed_MedIntensity_pct" = "developed",
+                  "Developed_HiIntensity_pct" = "developed", "Barren_Land_pct" = "open_space",
+                  "Forest_Deciduous_pct" = "Forest_Deciduous_pct", "Forest_Evergreen_pct" = "Forest_Evergreen_pct", 
+                  "Forest_mixed_pct" = "forest", "Shrub_Scrub_pct" = "shrub", 
+                  "Grass_landHerbaceous_pct" = "shrub", "Grass_PastureHay_pct" = "crops", 
+                  "Cultivated_Crops_pct" = "crops", "Wetlands_Woody_pct" = "wetlands", 
+                  "Wetlands_EmergentHerb_pct" = "wetlands", "geol_gneiss" = "geology_metamorphic", 
+                  "geol_granitic" = "geology_igneous", "geol_ultramafic" = "geology_metamorphic", 
+                  "geol_quarternary" = "geology_sedimentary", "geol_sedimentary" = "geology_sedimentary", 
+                  "geol_volcanic" = "geology_igneous", "geol_intermediate_pultonic" = "geology_igneous", 
+                  "CAT_BASIN_AREA" = "drainage_area", "CAT_BASIN_SLOPE" = "slope", 
+                  "CAT_ELEV_MEAN" = "elevation", "CAT_ELEV_MIN" = "elevation", 
+                  "CAT_ELEV_MAX" = "elevation", "CAT_STREAM_SLOPE" = "reach morphology", 
+                  "CAT_STREAM_LENGTH" = "stream_length", "road_Rural_den" = "road_density", 
+                  "road_private_den" = "road_density", "road_Total_den" = "road_density", 
+                  "Tree_Canopyin100mRip" = "shading", 
+                  "daily_LAI" = "shading",
+                  "temp.water" = "water quality", "DO.obs" = "water quality",
+                  "depth" = "reach morphology", "discharge" = "discharge",
+                  "pathlength" = "hydrologic hierarchy", "lengthkm" = "geometry",
+                 "shape_length"=  "geometry", "streamleve"= "hydrologic hierarchy",
+                 "streamorde"=  "hydrologic hierarchy", 
+                 "streamcalc" = "hydrologic hierarchy", 
+                 "totdasqkm" = "drainage_area", "slope" = "slope", "pathlength" = "hydrologic hierarchy" )
+
+```
+
+```{r, size='large', echo=FALSE, include=T, warning=FALSE, fig.width=6, fig.height=6}
+### start the PCA 
+
+LC_pca_dat <- river_metab_dat1 %>%
+  dplyr::select(Site_ID, all_of(top_vars_LC)) %>%
+  mutate(
+    crop = c(Grass_landHerbaceous_pct+ Cultivated_Crops_pct),
+    developed = c(Developed_MedIntensity_pct + Developed_HiIntensity_pct + Developed_LowIntensity_pct + road_Total_den), 
+    forest = c(Forest_mixed_pct + Forest_Evergreen_pct + Forest_Deciduous_pct),
+    water = c(Water_Open_pct + Ice_Snow_Perennial_pct),
+    shrub= c(Shrub_Scrub_pct + Wetlands_EmergentHerb_pct + Barren_Land_pct),
+    shading = c(Tree_Canopyin100mRip)
+  ) %>%
+  dplyr::select(Site_ID, crop, developed, forest, water, shrub, shading)
+
+col_patterns <- c("crop" = "crop",
+                  "developed" = "developed",
+                  "forest" = "forest",
+                  "water" = "water",
+                  "shrub" = "shrub",
+                   "shading" = "shading")
+
+LC_pca_data1 <- LC_pca_dat %>%
+  group_by(Site_ID) %>%
+      summarise(across(everything(), mean, na.rm = TRUE), .groups = "drop")
+
+# Prepare data for PCA by removing non-numeric and non-relevant columns
+LC_pca_data <- LC_pca_data1 %>% 
+  dplyr::select(-Site_ID) %>% 
+  dplyr::select(where(~ sd(., na.rm = TRUE) != 0)) %>%  # Drop columns with no variance
+  as.matrix()
+
+LC_pca_input_clean <- na.omit(LC_pca_data)
+
+domains <- dat_NHDinfo$state
+
+# Apply the categorization to column names
+smry_categories <- factor(sapply(colnames(LC_pca_data), function(col) {
+  col_patterns[col]
+}))
+
+pca_LC <- prcomp(LC_pca_input_clean, center = TRUE, scale. = TRUE)
+summary(pca_LC)
+
+library(factoextra)
+
+# Visualize PCA eigenvalues
+scree_plt_LC <- fviz_eig(pca_LC)
+scree_plt_LC
+
+# ggsave(plot = scree_plt_LC, filename = paste("/Users/kellyloria/Documents/River_Recovery_Dynamics_Analysis/figures/Watershed_attributes_screeplt_LC_25.png",sep=""),width=3,height=2.5,dpi=300)
+
+
+biplot(prcomp(LC_pca_input_clean, center = TRUE, scale. = TRUE))
+
+
+# Visualize PCA biplot with variable categories
+watershed_loadplot_LC <- fviz_pca_biplot(pca_LC, geom.var = 'arrow', geom.ind = 'point', title = '',
+                col.var = smry_categories,  ggtheme = theme_classic())
+    
+
+
+library(factoextra)
+library(ggplot2)
+
+watershed_loadplot_LC
+# ggsave(plot = watershed_loadplot_LC, filename = paste("/Users/kellyloria/Documents/River_Recovery_Dynamics_Analysis/figures/Watershed_attributes_load_LC_25.png",sep=""),width=4.5,height=3,dpi=300)
+
+
+```
+
+```{r, size='large', echo=FALSE, include=T, warning=FALSE, fig.width=6, fig.height=4}
+# Get the scores (principal component axes)
+LC_pca_scores <- as.data.frame(pca_LC$x)
+
+LC_pca_input_clean_sites <- na.omit(LC_pca_data1)
+
+# Add sites
+LC_pca_with_site <- cbind(Site_ID=LC_pca_input_clean_sites$Site_ID, LC_pca_scores)
+
+# Add GPP_synch back in (at the annual scale)
+LC_pca_with_response <- river_metab_dat1 %>%
+  left_join(LC_pca_with_site, by=c("Site_ID"))
+
+
+hist(LC_pca_with_response$PC1)
+summary(LC_pca_with_response$PC1)
+```
+
+###### A. How much variance in GPP is explained by landscape?
+
+*Land cover (LC) PCA:* Represents gradient from developed to
+natural/forested areas, to agricultural landscapes 
+
+-   High PC1 scores (positive values): Associated with urbanized or developed areas, especially medium and high intensity development 
+
+-   Moderate PC1 scores natural forested 
+
+-   Low PC1 scores (negative values): Associated with agricultural and herbaceous/ landscapes, like crops, pasture, and grasslands.
+
+
+```{r, size='large', echo=FALSE, include=F, warning=FALSE, fig.width=6, fig.height=4}
+
+# lm_model_LC <- lm(GPP_filled ~ PC1 +PC2,family=lognormal(), data = LC_pca_with_response)
+# summary(lm_model_LC)
+# 
+# hist(residuals(lm_model_LC)) # meh
+```
+
+###### BRMs
+
+Very similar to glm
+
+```{r, size='large', echo=F, include=T, warning=FALSE, cache=TRUE, fig.width=6, fig.height=4}
+library(brms)
+
+# Bayesian linear model
+brm_model <- brm(
+  formula = GPP_filled ~ PC1 + PC2,
+  data = LC_pca_with_response,
+  family = gaussian,  # same as lm
+  chains = 4,
+  cores = 4,
+  iter = 2000,
+  seed = 123
+)
+
+
+summary(brm_model)
+plot(brm_model)  # Diagnostic plots
+
+# bayes_R2(brm_model)
+
+```
+
+
+###### Quantile of different land cover type:
+
+```{r, size='large', echo=T, include=T, warning=FALSE, cache=TRUE, fig.width=6, fig.height=4}
+pc1_vals <- na.omit(LC_pca_with_response$PC1)
+
+# Get 1/3 cutoffs (33.3% and 66.6%)
+cut_points <- quantile(pc1_vals, probs = c(1/3, 2/3))
+
+# Create group labels
+LC_pca_with_response$PC1_group <- cut(
+  LC_pca_with_response$PC1,
+  breaks = c(-Inf, cut_points[1], cut_points[2], Inf),
+  labels = c("Q1", "Q2", "Q3"),
+  right = TRUE
+)
+
+
+tab_LC_pca_with_response <- LC_pca_with_response%>%
+  group_by(PC1_group) %>%
+  summarise(PC1_min=round(min(PC1, na.rm=T),2),
+            PC1_max=round(max(PC1, na.rm=T),2), 
+            site_no =length(unique(Site_ID)))
+
+
+tab_LC_pca_with_response
+
+```
+
+LC is fairly different across the 3 different groups
+
+```{r, echo=FALSE, include=F, warning=FALSE, fig.width=6, fig.height=3}
+# Set a color-blind friendly palette
+strat_colorsC <- c(
+  "Q1" = "#00BFC4",   
+  "Q2" = "#7CAE00",
+  "Q3" = "#F8766D"
+)
+```
+
+
+```{r, size='large', echo=F, include=T, warning=FALSE, cache=TRUE, fig.width=6, fig.height=4}
+ggplot(LC_pca_with_response, aes(x = PC1, fill = factor(PC1_group))) +
+  geom_histogram(bins = 30, alpha = 0.7, color = "black") +
+  scale_fill_manual(
+    values = strat_colorsC,
+    name = "PC1 Quantile",
+    labels = c("Forested","Developed", "Ag.")
+  ) +
+  theme_minimal() +
+  labs(title = "PC1 values by LC quantile",
+       x = "PC1",
+       y = "Count")
+```
+
+
+```{r, size='large', echo=F, include=T, warning=FALSE, cache=TRUE, fig.width=6, fig.height=4}
+
+metab_units_area <- (expression(paste('Metabolism (g C', m^-2,' ',y^-1,')', sep = ' ')))
+
+
+low_p <- '#6e2f9e'
+high_p <- '#f4e6ff'
+
+low_er <- '#381d01'
+high_er <- '#fa9600'
+
+
+LC_pca_plot <- LC_pca_with_response%>%
+  group_by(Site_ID) %>%
+  summarise(
+    GPP = mean(GPP_filled, na.rm=T),
+    ER = mean(c(ER_filled*-1), na.rm=T),
+    PC1 =mean(PC1, na.rm=T))
+
+
+library(ggplot2)
+library(ggnewscale)  
+
+fig_combined <- ggplot(LC_pca_plot, aes(x = PC1)) +
+  # GPP points (upward triangle)
+  geom_point(aes(y = GPP, fill = GPP, color = GPP), shape = 24, size = 2, alpha=0.75) +
+  scale_fill_gradient(name = "GPP", low = low_p, high = high_p) +
+  scale_color_gradient(name = "GPP", low = low_p, high = high_p) +
+  # Reset fill scale so ER can have its own
+  new_scale_fill() +
+    new_scale_color() +
+  # ER points (downward triangle)
+  geom_point(aes(y = ER, fill = ER, color = ER), shape = 25, size = 2, alpha=0.75) +
+  scale_fill_gradient(name = "ER", low = low_er, high = high_er) +
+  scale_color_gradient(name = "ER", low = low_er, high = high_er) +
+  scale_y_continuous(name = metab_units_area, expand = expansion(mult = c(0, 0.05))) +
+  theme_classic() +
+        theme(
+    axis.text = element_text(size = 16),
+    axis.title = element_text(size = 16, colour = "black"),
+    legend.text = element_text(size = 16),
+    legend.title = element_text(size = 16),
+    panel.grid = element_blank()
+  )
+# ggsave(plot = fig_combined, filename = paste("/Users/kellyloria/Documents/River_Recovery_Dynamics_Analysis/figures/LC_fig1b_25.png",sep=""),width=5.25,height=3.5,dpi=300)
+
+```
+
+However daily GPP looks fairly similar across all land cover types -
+despite the postive regression resuls with cropland
+
+```{r, size='large', echo=F, include=T, warning=FALSE, cache=TRUE, fig.width=6, fig.height=4}
+
+ggplot(LC_pca_with_response, aes(x = GPP_filled, fill = factor(PC1_group))) +
+  geom_histogram(bins = 30, alpha = 0.7, color = "black") +
+  scale_fill_manual(
+    values = strat_colorsC,
+    name = "PC1 Quantile",
+        labels = c("Forested","Developed", "Ag.")) +
+  theme_minimal() +
+  labs(title = "GPP by LC quantile",
+       x = "GPP",
+       y = "Count")
+```
+
+###### i. Land cover Q1
+
+PC1 
+
+```{r, size='large', echo=F, include=T, warning=FALSE, cache=TRUE, fig.width=6, fig.height=4}
+
+land_cover_q1 <- LC_pca_with_response %>%
+dplyr::filter(PC1_group=="Q1") 
+
+unique(land_cover_q1$Site_ID)
+unique(land_cover_q1$Latitude)
+
+hist(land_cover_q1$GPP_filled,  breaks = 30)
+
+```
+
+###### ii. Land cover Q2
+
+```{r, size='large', echo=F, include=T, warning=FALSE, cache=TRUE, fig.width=6, fig.height=4}
+
+land_cover_q2 <- LC_pca_with_response %>%
+dplyr::filter(PC1_group=="Q2") 
+
+
+unique(land_cover_q2$Site_ID)
+unique(land_cover_q2$Latitude)
+
+hist(land_cover_q2$GPP_filled)
+
+```
+
+###### iii. Land cover Q3
+
+```{r, size='large', echo=F, include=T, warning=FALSE, cache=TRUE, fig.width=6, fig.height=4}
+
+land_cover_q3 <- LC_pca_with_response %>%
+dplyr::filter(PC1_group=="Q3")
+unique(land_cover_q3$Site_ID)
+unique(land_cover_q3$Latitude)
+
+hist(land_cover_q3$GPP_filled)
+
+```
+
+###### Daily synchrony in GPP based PC of land cover Q1
+
+```{r, warning=F, size = 'small', echo=F, include=F}
+GPP_long_q1 <- land_cover_q1 %>%
+  group_by(Site_ID, date, Lat, Lon) %>%
+  summarise(GPP_filled = mean(GPP_filled, na.rm = TRUE), .groups = "drop")
+
+GPP_wide_day_q1 <- GPP_long_q1 %>%
+  pivot_wider(
+    names_from = date,
+    values_from = GPP_filled)
+
+# Now, calculate spatial Synchrony in the time series using the Sncf() function
+RR_df.corr_LC_q1 <- Sncf(x=GPP_wide_day_q1$Lon,
+                   y=GPP_wide_day_q1$Lat,
+                   z=GPP_wide_day_q1[,4:ncol(GPP_wide_day_q1)],
+                   resamp = 1000, 
+                   latlon = T,
+                   na.rm = T) # allows for NA given each stream has 280 days per year
+
+
+plot(RR_df.corr_LC_q1)
+
+
+GPP_corrgram_summary.table <- summary(RR_df.corr_LC_q1)
+
+# Plot using ggplot for export
+# create a dataframe of the predicted values
+GPP.corr.pred.LC.Q1 <- data.frame(x = matrix(unlist(RR_df.corr_LC_q1$real$predicted$x)),
+                                             y = matrix(unlist(RR_df.corr_LC_q1$real$predicted$y)),
+                               time_scale = "daily",
+                               parameter = "GPP",
+                               strat = "Developed")
+
+## Sample average line
+Regional.synch <- GPP_corrgram_summary.table$Regional.synch
+GPP.corr.pred.LC.Q1$mean_synch <- round(Regional.synch,2)
+
+Regional.synch_x <-  round(GPP_corrgram_summary.table$estimates["intercepts", "cbar"], 0)
+GPP.corr.pred.LC.Q1$cbar <- Regional.synch_x
+
+
+
+
+# ...and a dataframe of the y values for the bootstrap prediction
+GPP.corr.bootValues.LC.Q1 <- as.data.frame(t(RR_df.corr_LC_q1$boot$boot.summary$predicted$y))
+
+# merge x and y values (min and max) for the bootstrap confidence intervals into a dataframe
+GPP.corr.boot.LC.Q1 <- data.frame(x = matrix(unlist(RR_df.corr_LC_q1$boot$boot.summary$predicted$x)),
+                                             yminGPP = GPP.corr.bootValues.LC.Q1$`0.025`,
+                                             ymaxGPP = GPP.corr.bootValues.LC.Q1$`0.975`,
+                               time_scale = "daily",
+                                  parameter = "GPP",
+                               strat = "Developed")
+
+```
+
+
+
+```{r, warning=F, size = 'small', echo=F, include=T, cache=TRUE}
+cat(paste0(
+  "$y.intercept: ", round(GPP_corrgram_summary.table$estimates["intercepts", "y"], 2), "\n",
+  "$Regional.synch: ", round(GPP_corrgram_summary.table$Regional.synch[1], 2), "\n",  
+  "$cbar: ", round(GPP_corrgram_summary.table$estimates["intercepts", "cbar"], 0), " km\n",
+  "$x.intercept: ", round(GPP_corrgram_summary.table$quantiles["0.5", "x"], 0), " km\n"
+))
+```
+
+
+###### Daily synchrony in GPP land cover Q2
+
+```{r, warning=F, size = 'small', echo=F, include=F}
+GPP_long_Q2 <- land_cover_q2 %>%
+  group_by(Site_ID, date, Lat, Lon) %>%
+  summarise(GPP_filled = mean(GPP_filled, na.rm = TRUE), .groups = "drop")
+
+GPP_wide_day_Q2 <- GPP_long_Q2 %>%
+  pivot_wider(
+    names_from = date,
+    values_from = GPP_filled)
+
+# Now, calculate spatial Synchrony in the time series using the Sncf() function
+RR_df.corr_Moderate <- Sncf(x=GPP_wide_day_Q2$Lon,
+                   y=GPP_wide_day_Q2$Lat,
+                   z=GPP_wide_day_Q2[,4:ncol(GPP_wide_day_Q2)],
+                   resamp = 1000, 
+                   latlon = T,
+                   na.rm = T) # allows for NA given each stream has 280 days per year
+
+
+plot(RR_df.corr_Moderate)
+
+
+GPP_corrgram_summary.table <- summary(RR_df.corr_Moderate)
+
+# Plot using ggplot for export
+# create a dataframe of the predicted values
+GPP.corr.pred.LC.Q2 <- data.frame(x = matrix(unlist(RR_df.corr_Moderate$real$predicted$x)),
+                                             y = matrix(unlist(RR_df.corr_Moderate$real$predicted$y)),
+                               time_scale = "daily",
+                               parameter = "GPP",
+                               strat = "Moderate")
+
+## Sample average line
+Regional.synch <- GPP_corrgram_summary.table$Regional.synch
+GPP.corr.pred.LC.Q2$mean_synch <- round(Regional.synch,2)
+
+Regional.synch_x <-  round(GPP_corrgram_summary.table$estimates["intercepts", "cbar"], 0)
+GPP.corr.pred.LC.Q2$cbar <- Regional.synch_x
+
+
+
+# ...and a dataframe of the y values for the bootstrap prediction
+GPP.corr.bootValues.LC.Q2 <- as.data.frame(t(RR_df.corr_Moderate$boot$boot.summary$predicted$y))
+
+# merge x and y values (min and max) for the bootstrap confidence intervals into a dataframe
+GPP.corr.boot.LC.Q2 <- data.frame(x = matrix(unlist(RR_df.corr_Moderate$boot$boot.summary$predicted$x)),
+                                             yminGPP = GPP.corr.bootValues.LC.Q2$`0.025`,
+                                             ymaxGPP = GPP.corr.bootValues.LC.Q2$`0.975`,
+                               time_scale = "daily",
+                                  parameter = "GPP",
+                               strat = "Moderate")
+
+```
+
+```{r, warning=F, size = 'small', echo=F, include=T, cache=TRUE}
+cat(paste0(
+  "$y.intercept: ", round(GPP_corrgram_summary.table$estimates["intercepts", "y"], 2), "\n",
+  "$Regional.synch: ", round(GPP_corrgram_summary.table$Regional.synch[1], 2), "\n",  
+  "$cbar: ", round(GPP_corrgram_summary.table$estimates["intercepts", "cbar"], 0), " km\n",
+  "$x.intercept: ", round(GPP_corrgram_summary.table$quantiles["0.5", "x"], 0), " km\n"
+))
+```
+
+###### Daily synchrony in GPP land cover Q3
+
+```{r, warning=F, size = 'small', echo=F, include=F}
+GPP_long_Q3 <- land_cover_q3 %>%
+  group_by(Site_ID, date, Lat, Lon) %>%
+  summarise(GPP_filled = mean(GPP_filled, na.rm = TRUE), .groups = "drop")
+
+GPP_wide_day_Q3 <- GPP_long_Q3 %>%
+  pivot_wider(
+    names_from = date,
+    values_from = GPP_filled)
+
+# Now, calculate spatial Synchrony in the time series using the Sncf() function
+RR_df.corr_Natural <- Sncf(x=GPP_wide_day_Q3$Lon,
+                   y=GPP_wide_day_Q3$Lat,
+                   z=GPP_wide_day_Q3[,4:ncol(GPP_wide_day_Q3)],
+                   resamp = 1000, 
+                   latlon = T,
+                   na.rm = T) # allows for NA given each stream has 280 days per year
+
+
+plot(RR_df.corr_Natural)
+
+
+GPP_corrgram_summary.table <- summary(RR_df.corr_Natural)
+
+# Plot using ggplot for export
+# create a dataframe of the predicted values
+GPP.corr.pred.LC.Q3 <- data.frame(x = matrix(unlist(RR_df.corr_Natural$real$predicted$x)),
+                                             y = matrix(unlist(RR_df.corr_Natural$real$predicted$y)),
+                               time_scale = "daily",
+                               parameter = "GPP",
+                               strat = "Natural")
+
+## Sample average line
+Regional.synch <- GPP_corrgram_summary.table$Regional.synch
+GPP.corr.pred.LC.Q3$mean_synch <- round(Regional.synch,2)
+
+Regional.synch_x <-  round(GPP_corrgram_summary.table$estimates["intercepts", "cbar"], 0)
+GPP.corr.pred.LC.Q3$cbar <- Regional.synch_x
+
+
+# ...and a dataframe of the y values for the bootstrap prediction
+GPP.corr.bootValues.LC.Q3 <- as.data.frame(t(RR_df.corr_Natural$boot$boot.summary$predicted$y))
+
+# merge x and y values (min and max) for the bootstrap confidence intervals into a dataframe
+GPP.corr.boot.LC.Q3 <- data.frame(x = matrix(unlist(RR_df.corr_Natural$boot$boot.summary$predicted$x)),
+                                             yminGPP = GPP.corr.bootValues.LC.Q3$`0.025`,
+                                             ymaxGPP = GPP.corr.bootValues.LC.Q3$`0.975`,
+                               time_scale = "daily",
+                                  parameter = "GPP",
+                               strat = "Natural")
+```
+
+
+```{r, warning=F, size = 'small', echo=F, include=T, cache=TRUE}
+cat(paste0(
+  "$y.intercept: ", round(GPP_corrgram_summary.table$estimates["intercepts", "y"], 2), "\n",
+  "$Regional.synch: ", round(GPP_corrgram_summary.table$Regional.synch[1], 2), "\n",  
+  "$cbar: ", round(GPP_corrgram_summary.table$estimates["intercepts", "cbar"], 0), " km\n",
+  "$x.intercept: ", round(GPP_corrgram_summary.table$quantiles["0.5", "x"], 0), " km\n"
+))
+```
+
+```{r, echo=FALSE, include=F, warning=FALSE, fig.width=12, fig.height=8}
+
+pred_df_all <- bind_rows(GPP.corr.pred.LC.Q1, GPP.corr.pred.LC.Q2, GPP.corr.pred.LC.Q3)%>%
+  mutate(x_rounded_5 = round(x / 5) * 5)%>%
+  group_by(time_scale, parameter, strat, x_rounded_5)%>%
+  summarise(across(everything(), mean, na.rm = TRUE), .groups = "drop") %>%dplyr::filter(x<half_dist_km)
+
+
+ci_df_all   <- bind_rows(GPP.corr.boot.LC.Q1, GPP.corr.boot.LC.Q2, GPP.corr.boot.LC.Q3 ) %>%
+  mutate(x_rounded_5 = round(x / 5) * 5)%>%
+  group_by(time_scale, parameter, strat, x_rounded_5)%>%
+  summarise(across(everything(), mean, na.rm = TRUE), .groups = "drop") %>%dplyr::filter(x<half_dist_km)
+
+```
+
+###### Calculate the percent difference between different land cover types
+
+```{r, echo=F, include=T, warning=FALSE, fig.width=12, fig.height=8}
+
+# Spread the data so each LC Q becomes a column
+pred_wide <- pred_df_all %>%
+  dplyr::select(x_rounded_5, y, strat) %>%
+  pivot_wider(names_from = strat, values_from = y)
+
+# Calculate percent differences from daily for each other time scale
+# Formula: ((other - daily) / daily) * 100
+pred_diff <- pred_wide %>%
+  mutate(
+    LQ1_diff = (abs(Developed - Developed) / Developed) * 100,
+    LQ2_diff = (abs(Developed - Moderate) / Developed) * 100,
+    LQ3_diff = (abs(Developed - Natural) / Developed) * 100)
+
+pred_diff
+```
+
+### Figure 4a (?): Spline Correlogram of GPP at different landcover types
+
+
+#### Look when synchrony dips below the sample average/ regional synch value for each timescale:
+
+This distances where parameters are no longer regionally synchronous
+
+```{r, warning=F, size = 'small', echo=F, include=T}
+
+intersection_df <- pred_df_all %>%
+  group_by(strat) %>%
+  summarise(
+    y= mean(mean_synch),
+    x = mean(cbar))
+
+intersection_df
+```
+
+
+```{r, echo=FALSE, include=F, warning=FALSE, fig.width=6, fig.height=3}
+# Set a color-blind friendly palette
+strat_colors <- c(
+  "Developed" = "#00BFC4",   
+  "Moderate" = "#7CAE00",
+  "Natural" = "#F8766D"
+)
+```
+
+
+```{r, echo=FALSE, include=F, warning=FALSE, fig.width=8, fig.height=6}
+
+###
+GPP_synch_spline_LC <- ggplot() +
+  # Ribbon for CI
+  geom_ribbon(data = ci_df_all%>%dplyr::filter(x<half_dist_km),
+              aes(x = x, ymin = yminGPP, ymax = ymaxGPP, fill = strat),
+              alpha = 0.1) +
+  # Main spline lines
+  geom_line(data = pred_df_all%>%dplyr::filter(x<half_dist_km),
+            aes(x = x, y = y, color = strat),
+            size = 1) +
+  # Horizontal mean synchrony lines
+   geom_segment(data = intersection_df,
+               aes(x = 0, xend = x, 
+                   y = y, yend = y,
+                   color = strat),
+               linetype = "dashed") +
+  # Draw vertical segments from bottom to y_intersect
+  geom_segment(data = intersection_df,
+               aes(x = x, xend = x, 
+                   y = -0.25, yend = y,
+                   color = strat),
+               linetype = "dashed") +
+  ylim(-0.25, 0.75) +
+  labs(title = "GPP and land cover",
+       y = "Correlation",
+       x = NULL,
+       fill = "Land cover PC1",
+       color = "Land cover PC1") +
+  geom_vline(xintercept = 807, color="grey40", lty=3) +
+    scale_color_manual(values = strat_colors,
+                           labels = c("Forested","Developed", "Ag."))+
+  scale_fill_manual(values = strat_colors,
+                        labels = c("Forested","Developed", "Ag."))+
+  theme_classic() +
+  theme(legend.position = "right")
+
+GPP_synch_spline_LC
+
+```
+
+
+
+
+
+Agricultural and forest influences sites may have the most synchronous
+GPP.
+
+###### Quantify synchrony decay with distance:
+
+Where b parameter represents the decay rate: higher b = faster loss of
+synchrony with distance.
+
+```{r, warning=F, size = 'small', echo=F, include=T}
+
+fit_models <- pred_df_all %>%
+  group_by(strat) %>%
+  filter(x<cbar)%>%
+  nest() %>%
+  mutate(model = map(data, ~ nls(y ~ a * exp(-b * x), data = ., start = list(a = 1, b = 0.001))),
+         params = map(model, tidy)) %>%
+  unnest(params) %>%
+  mutate(across(c(estimate, std.error, statistic, p.value), ~ round(.x, 4), .names = "rounded_{.col}"))
+
+fit_models_tab <- as.data.frame(fit_models)%>%
+  dplyr::select(strat, term,rounded_estimate: rounded_p.value)
+
+fit_models_tab
+```
+
+
+### ER
+
+###### Daily synchrony in ER based PC of land cover Q1
+
+```{r, warning=F, size = 'small', echo=F, include=F}
+ER_long_q1 <- land_cover_q1 %>%
+  group_by(Site_ID, date, Lat, Lon) %>%
+  summarise(ER_filled = mean(ER_filled, na.rm = TRUE), .groups = "drop")
+
+ER_wide_day_q1 <- ER_long_q1 %>%
+  pivot_wider(
+    names_from = date,
+    values_from = ER_filled)
+
+# Now, calculate spatial Synchrony in the time series using the Sncf() function
+RR_df.corr_LC_q1 <- Sncf(x=ER_wide_day_q1$Lon,
+                   y=ER_wide_day_q1$Lat,
+                   z=ER_wide_day_q1[,4:ncol(ER_wide_day_q1)],
+                   resamp = 1000, 
+                   latlon = T,
+                   na.rm = T) # allows for NA given each stream has 280 days per year
+
+
+plot(RR_df.corr_LC_q1)
+
+
+ER_corrgram_summary.table <- summary(RR_df.corr_LC_q1)
+
+# Plot using ggplot for export
+# create a dataframe of the predicted values
+ER.corr.pred.LC.Q1 <- data.frame(x = matrix(unlist(RR_df.corr_LC_q1$real$predicted$x)),
+                                             y = matrix(unlist(RR_df.corr_LC_q1$real$predicted$y)),
+                               time_scale = "daily",
+                               parameter = "ER",
+                               strat = "Developed")
+
+## Sample average line
+Regional.synch <- ER_corrgram_summary.table$Regional.synch
+ER.corr.pred.LC.Q1$mean_synch <- round(Regional.synch,2)
+
+Regional.synch_x <-  round(ER_corrgram_summary.table$estimates["intercepts", "cbar"], 0)
+ER.corr.pred.LC.Q1$cbar <- Regional.synch_x
+
+
+
+
+# ...and a dataframe of the y values for the bootstrap prediction
+ER.corr.bootValues.LC.Q1 <- as.data.frame(t(RR_df.corr_LC_q1$boot$boot.summary$predicted$y))
+
+# merge x and y values (min and max) for the bootstrap confidence intervals into a dataframe
+ER.corr.boot.LC.Q1 <- data.frame(x = matrix(unlist(RR_df.corr_LC_q1$boot$boot.summary$predicted$x)),
+                                             yminER = ER.corr.bootValues.LC.Q1$`0.025`,
+                                             ymaxER = ER.corr.bootValues.LC.Q1$`0.975`,
+                               time_scale = "daily",
+                                  parameter = "ER",
+                               strat = "Developed")
+
+```
+
+
+
+```{r, warning=F, size = 'small', echo=F, include=T, cache=TRUE}
+cat(paste0(
+  "$y.intercept: ", round(ER_corrgram_summary.table$estimates["intercepts", "y"], 2), "\n",
+  "$Regional.synch: ", round(ER_corrgram_summary.table$Regional.synch[1], 2), "\n",  
+  "$cbar: ", round(ER_corrgram_summary.table$estimates["intercepts", "cbar"], 0), " km\n",
+  "$x.intercept: ", round(ER_corrgram_summary.table$quantiles["0.5", "x"], 0), " km\n"
+))
+```
+
+
+###### Daily synchrony in ER land cover Q2
+
+```{r, warning=F, size = 'small', echo=F, include=F}
+ER_long_Q2 <- land_cover_q2 %>%
+  group_by(Site_ID, date, Lat, Lon) %>%
+  summarise(ER_filled = mean(ER_filled, na.rm = TRUE), .groups = "drop")
+
+ER_wide_day_Q2 <- ER_long_Q2 %>%
+  pivot_wider(
+    names_from = date,
+    values_from = ER_filled)
+
+# Now, calculate spatial Synchrony in the time series using the Sncf() function
+RR_df.corr_Moderate <- Sncf(x=ER_wide_day_Q2$Lon,
+                   y=ER_wide_day_Q2$Lat,
+                   z=ER_wide_day_Q2[,4:ncol(ER_wide_day_Q2)],
+                   resamp = 1000, 
+                   latlon = T,
+                   na.rm = T) # allows for NA given each stream has 280 days per year
+
+
+plot(RR_df.corr_Moderate)
+
+
+ER_corrgram_summary.table <- summary(RR_df.corr_Moderate)
+
+# Plot using ggplot for export
+# create a dataframe of the predicted values
+ER.corr.pred.LC.Q2 <- data.frame(x = matrix(unlist(RR_df.corr_Moderate$real$predicted$x)),
+                                             y = matrix(unlist(RR_df.corr_Moderate$real$predicted$y)),
+                               time_scale = "daily",
+                               parameter = "ER",
+                               strat = "Moderate")
+
+## Sample average line
+Regional.synch <- ER_corrgram_summary.table$Regional.synch
+ER.corr.pred.LC.Q2$mean_synch <- round(Regional.synch,2)
+
+Regional.synch_x <-  round(ER_corrgram_summary.table$estimates["intercepts", "cbar"], 0)
+ER.corr.pred.LC.Q2$cbar <- Regional.synch_x
+
+
+
+# ...and a dataframe of the y values for the bootstrap prediction
+ER.corr.bootValues.LC.Q2 <- as.data.frame(t(RR_df.corr_Moderate$boot$boot.summary$predicted$y))
+
+# merge x and y values (min and max) for the bootstrap confidence intervals into a dataframe
+ER.corr.boot.LC.Q2 <- data.frame(x = matrix(unlist(RR_df.corr_Moderate$boot$boot.summary$predicted$x)),
+                                             yminER = ER.corr.bootValues.LC.Q2$`0.025`,
+                                             ymaxER = ER.corr.bootValues.LC.Q2$`0.975`,
+                               time_scale = "daily",
+                                  parameter = "ER",
+                               strat = "Moderate")
+
+```
+
+```{r, warning=F, size = 'small', echo=F, include=T, cache=TRUE}
+cat(paste0(
+  "$y.intercept: ", round(ER_corrgram_summary.table$estimates["intercepts", "y"], 2), "\n",
+  "$Regional.synch: ", round(ER_corrgram_summary.table$Regional.synch[1], 2), "\n",  
+  "$cbar: ", round(ER_corrgram_summary.table$estimates["intercepts", "cbar"], 0), " km\n",
+  "$x.intercept: ", round(ER_corrgram_summary.table$quantiles["0.5", "x"], 0), " km\n"
+))
+```
+
+###### Daily synchrony in ER land cover Q3
+
+```{r, warning=F, size = 'small', echo=F, include=F}
+ER_long_Q3 <- land_cover_q3 %>%
+  group_by(Site_ID, date, Lat, Lon) %>%
+  summarise(ER_filled = mean(ER_filled, na.rm = TRUE), .groups = "drop")
+
+ER_wide_day_Q3 <- ER_long_Q3 %>%
+  pivot_wider(
+    names_from = date,
+    values_from = ER_filled)
+
+# Now, calculate spatial Synchrony in the time series using the Sncf() function
+RR_df.corr_Natural <- Sncf(x=ER_wide_day_Q3$Lon,
+                   y=ER_wide_day_Q3$Lat,
+                   z=ER_wide_day_Q3[,4:ncol(ER_wide_day_Q3)],
+                   resamp = 1000, 
+                   latlon = T,
+                   na.rm = T) # allows for NA given each stream has 280 days per year
+
+
+plot(RR_df.corr_Natural)
+
+
+ER_corrgram_summary.table <- summary(RR_df.corr_Natural)
+
+# Plot using ggplot for export
+# create a dataframe of the predicted values
+ER.corr.pred.LC.Q3 <- data.frame(x = matrix(unlist(RR_df.corr_Natural$real$predicted$x)),
+                                             y = matrix(unlist(RR_df.corr_Natural$real$predicted$y)),
+                               time_scale = "daily",
+                               parameter = "ER",
+                               strat = "Natural")
+
+## Sample average line
+Regional.synch <- ER_corrgram_summary.table$Regional.synch
+ER.corr.pred.LC.Q3$mean_synch <- round(Regional.synch,2)
+
+Regional.synch_x <-  round(ER_corrgram_summary.table$estimates["intercepts", "cbar"], 0)
+ER.corr.pred.LC.Q3$cbar <- Regional.synch_x
+
+
+# ...and a dataframe of the y values for the bootstrap prediction
+ER.corr.bootValues.LC.Q3 <- as.data.frame(t(RR_df.corr_Natural$boot$boot.summary$predicted$y))
+
+# merge x and y values (min and max) for the bootstrap confidence intervals into a dataframe
+ER.corr.boot.LC.Q3 <- data.frame(x = matrix(unlist(RR_df.corr_Natural$boot$boot.summary$predicted$x)),
+                                             yminER = ER.corr.bootValues.LC.Q3$`0.025`,
+                                             ymaxER = ER.corr.bootValues.LC.Q3$`0.975`,
+                               time_scale = "daily",
+                                  parameter = "ER",
+                               strat = "Natural")
+```
+
+
+```{r, warning=F, size = 'small', echo=F, include=T, cache=TRUE}
+cat(paste0(
+  "$y.intercept: ", round(ER_corrgram_summary.table$estimates["intercepts", "y"], 2), "\n",
+  "$Regional.synch: ", round(ER_corrgram_summary.table$Regional.synch[1], 2), "\n",  
+  "$cbar: ", round(ER_corrgram_summary.table$estimates["intercepts", "cbar"], 0), " km\n",
+  "$x.intercept: ", round(ER_corrgram_summary.table$quantiles["0.5", "x"], 0), " km\n"
+))
+```
+
+```{r, echo=FALSE, include=F, warning=FALSE, fig.width=12, fig.height=8}
+
+pred_df_all <- bind_rows(ER.corr.pred.LC.Q1, ER.corr.pred.LC.Q2, ER.corr.pred.LC.Q3)%>%
+  mutate(x_rounded_5 = round(x / 5) * 5)%>%
+  group_by(time_scale, parameter, strat, x_rounded_5)%>%
+  summarise(across(everything(), mean, na.rm = TRUE), .groups = "drop") %>%dplyr::filter(x<half_dist_km)
+
+
+ci_df_all   <- bind_rows(ER.corr.boot.LC.Q1, ER.corr.boot.LC.Q2, ER.corr.boot.LC.Q3 ) %>%
+  mutate(x_rounded_5 = round(x / 5) * 5)%>%
+  group_by(time_scale, parameter, strat, x_rounded_5)%>%
+  summarise(across(everything(), mean, na.rm = TRUE), .groups = "drop") %>%dplyr::filter(x<half_dist_km)
+
+```
+
+###### Calculate the percent difference between different land cover types
+
+```{r, echo=F, include=T, warning=FALSE, fig.width=12, fig.height=8}
+
+# Spread the data so each LC Q becomes a column
+pred_wide <- pred_df_all %>%
+  dplyr::select(x_rounded_5, y, strat) %>%
+  pivot_wider(names_from = strat, values_from = y)
+
+# Calculate percent differences from daily for each other time scale
+# Formula: ((other - daily) / daily) * 100
+pred_diff <- pred_wide %>%
+  mutate(
+    LQ1_diff = (abs(Developed - Developed) / Developed) * 100,
+    LQ2_diff = (abs(Developed - Moderate) / Developed) * 100,
+    LQ3_diff = (abs(Developed - Natural) / Developed) * 100)
+
+pred_diff
+```
+
+### Figure 4a (?): Spline Correlogram of ER at different landcover types
+
+
+#### Look when synchrony dips below the sample average/ regional synch value for each timescale:
+
+This distances where parameters are no longer regionally synchronous
+
+```{r, warning=F, size = 'small', echo=F, include=T}
+
+intersection_df <- pred_df_all %>%
+  group_by(strat) %>%
+  summarise(
+    y= mean(mean_synch),
+    x = mean(cbar))
+
+intersection_df
+```
+
+
+```{r, echo=FALSE, include=F, warning=FALSE, fig.width=6, fig.height=3}
+# Set a color-blind friendly palette
+strat_colors <- c(
+  "Developed" = "#00BFC4",   
+  "Moderate" = "#7CAE00",
+  "Natural" = "#F8766D"
+)
+```
+
+
+```{r, echo=FALSE, include=F, warning=FALSE, fig.width=8, fig.height=6}
+
+###
+ER_synch_spline_LC <- ggplot() +
+  # Ribbon for CI
+  geom_ribbon(data = ci_df_all%>%dplyr::filter(x<half_dist_km),
+              aes(x = x, ymin = yminER, ymax = ymaxER, fill = strat),
+              alpha = 0.1) +
+  # Main spline lines
+  geom_line(data = pred_df_all%>%dplyr::filter(x<half_dist_km),
+            aes(x = x, y = y, color = strat),
+            size = 1) +
+  # Horizontal mean synchrony lines
+   geom_segment(data = intersection_df,
+               aes(x = 0, xend = x, 
+                   y = y, yend = y,
+                   color = strat),
+               linetype = "dashed") +
+  # Draw vertical segments from bottom to y_intersect
+  geom_segment(data = intersection_df,
+               aes(x = x, xend = x, 
+                   y = -0.25, yend = y,
+                   color = strat),
+               linetype = "dashed") +
+  ylim(-0.25, 0.75) +
+  labs(title = "ER and land cover",
+       y = "Correlation",
+       x = NULL,
+       fill = "Land cover PC1",
+       color = "Land cover PC1") +
+    geom_vline(xintercept = 1083, color="grey40", lty=3) +
+    scale_color_manual(values = strat_colors,
+                           labels = c("Forested","Developed", "Ag."))+
+  scale_fill_manual(values = strat_colors,
+                        labels = c("Forested","Developed", "Ag."))+
+  theme_classic() +
+  theme(legend.position = "right")
+
+ER_synch_spline_LC
+
+```
+
+
+Agricultural and forest influences sites may have the most synchronous
+ER.
+
+###### Quantify synchrony decay with distance:
+
+Where b parameter represents the decay rate: higher b = faster loss of
+synchrony with distance.
+
+```{r, warning=F, size = 'small', echo=F, include=T}
+
+fit_models <- pred_df_all %>%
+  group_by(strat) %>%
+  filter(x<cbar)%>%
+  nest() %>%
+  mutate(model = map(data, ~ nls(y ~ a * exp(-b * x), data = ., start = list(a = 1, b = 0.001))),
+         params = map(model, tidy)) %>%
+  unnest(params) %>%
+  mutate(across(c(estimate, std.error, statistic, p.value), ~ round(.x, 6), .names = "rounded_{.col}"))
+
+fit_models_tab <- as.data.frame(fit_models)%>%
+  dplyr::select(strat, term,rounded_estimate: rounded_p.value)
+
+fit_models_tab
+```
+
+###
+
+
+### C. Basin characteristics
+
+```{r, size='large', echo=T, include=T, warning=FALSE, cache=TRUE, fig.width=12, fig.height=8}
+
+# Prepare data for RF
+rf_basin_data <- river_metab_dat1[,c("lengthkm", "shape_length", "streamleve", 
+                                     "streamorde", "streamcalc", "totdasqkm", "slope",
+                                     "pathlength")]
+
+
+rf_basin_input <- data.frame(GPP_synch = river_metab_dat1$GPP_filled, rf_basin_data)
+rf_basin_input_clean <- na.omit(rf_basin_input)
+
+# Now run the model
+rf_basin_model <- randomForest(GPP_synch ~ ., data = rf_basin_input_clean,
+                         importance = TRUE, ntree = 200)
+
+# Plot importance
+varImpPlot(rf_basin_model)
+
+# Get importance metrics from your existing model
+importance_vals <- randomForest ::importance(rf_basin_model, type = 1)  # type = 1 for %IncMSE
+importance_df <- data.frame(variable = rownames(importance_vals),
+                            IncMSE = importance_vals[, 1])
+
+importance_df
+# Sort by importance and keep top 10
+top_vars_basin <- importance_df %>%
+  arrange(desc(IncMSE)) %>%
+  slice(1:10) %>%
+  pull(variable)
+```
+
+###### Create the composite variable for basin characteristics
+
+```{r, size='large', echo=FALSE, include=T, warning=FALSE, fig.width=6, fig.height=4}
+### start the PCA 
+pca_basin_dat <- river_metab_dat1 %>%
+  dplyr::select(Site_ID,  all_of(top_vars_basin))
+
+pca_basin_data1 <- pca_basin_dat %>%
+  group_by(Site_ID) %>%
+      summarise(across(everything(), mean, na.rm = TRUE), .groups = "drop")
+
+# Prepare data for PCA by removing non-numeric and non-relevant columns
+pca_basin_data <- pca_basin_data1 %>% 
+  dplyr::select(-Site_ID) %>% 
+  dplyr::select(where(~ sd(., na.rm = TRUE) != 0)) %>%  # Drop columns with no variance
+  as.matrix()
+
+pca_basin_input_clean <- na.omit(pca_basin_data)
+
+domains <- dat_NHDinfo$state
+
+# Apply the categorization to column names
+smry_categories <- factor(sapply(colnames(pca_basin_data), function(col) {
+  col_patterns[col]
+}))
+
+
+pca_basin <- prcomp(pca_basin_input_clean, center = TRUE, scale. = TRUE)
+
+# Visualize PCA eigenvalues
+scree_plt_basin <- fviz_eig(pca_basin)
+scree_plt_basin
+
+# ggsave(plot = scree_plt_basin, filename = paste("/Users/kellyloria/Documents/River_Recovery_Dynamics_Analysis/figures/Watershed_attributes_screeplt_basin_25.png",sep=""),width=4,height=3.5,dpi=300)
+
+
+biplot(prcomp(pca_basin_input_clean, center = TRUE, scale. = TRUE))
+
+
+# Visualize PCA biplot with variable categories
+watershed_loadplot_basin<- fviz_pca_biplot(pca_basin, geom.var = 'arrow', geom.ind = 'point', title = '',
+                col.var = smry_categories,  ggtheme = theme_classic())
+
+watershed_loadplot_basin
+
+# ggsave(plot = watershed_loadplot_basin, filename = paste("/Users/kellyloria/Documents/River_Recovery_Dynamics_Analysis/figures/Watershed_attributes_load_basin_25.png",sep=""),width=4.5,height=3,dpi=300)
+
+```
+
+*PC1:*
+
+-   Higher values represent larger, higher order, more dendritic streams
+    while lower values represent steeper, smaller, lower-order streams
+
+*PC2:*
+
+-   High PC2 shorter streams with more branching (higher
+    streamcalc/streamorde) while lower represents longer more linear
+    streams
+
+```{r, size='large', echo=FALSE, include=T, warning=FALSE, fig.width=6, fig.height=4}
+# Get the scores (principal component axes)
+
+basin_pca_scores <- as.data.frame(pca_basin$x)
+
+basin_pca_input_clean_sites <- na.omit(pca_basin_data1)
+
+# Add sites
+basin_pca_with_site <- cbind(Site_ID=basin_pca_input_clean_sites$Site_ID, basin_pca_scores)
+
+# Add GPP_synch back in (at the annual scale)
+basin_pca_with_response <- river_metab_dat %>%
+  left_join(basin_pca_with_site, by=c("Site_ID"))
+
+```
+
+#### B. How much variance in GPP is explained by geology?
+
+GLM:
+
+```{r, size='large', echo=FALSE, include=T, warning=FALSE, fig.width=6, fig.height=4}
+
+lm_model_basin <- lm(GPP_filled ~ PC1 + PC2, data = basin_pca_with_response)
+summary(lm_model_basin)
+
+hist(residuals(lm_model_basin)) # meh
+```
+
+Slope PC1: Showing lower GPP in large, steep, high-elevation basins
+
+Adjusted R-squared: 0.01126
+
+#### BRMs slope + 0.25
+
+Very similar to glm again
+
+```{r, size='large', echo=F, include=T, warning=FALSE, cache=TRUE, fig.width=6, fig.height=4}
+# Bayesian linear model
+brm_model_basin <- brm(
+  formula = GPP_filled ~ PC1 + PC2,
+  data = basin_pca_with_response,
+  family = gaussian(),  # same as lm
+  chains = 4,
+  cores = 4,
+  iter = 2000,
+  seed = 123
+)
+
+summary(brm_model_basin)
+plot(brm_model_basin)  # Diagnostic plots
+
+# bayes_R2(brm_model)
+
+```
+
+#### C. Quantile of different basinogies:
+
+```{r, size='large', echo=F, include=F, warning=FALSE, cache=TRUE, fig.width=6, fig.height=4}
+pc1_vals <- na.omit(basin_pca_with_response$PC1)
+
+# Get 1/3 cutoffs (33.3% and 66.6%)
+cut_points <- quantile(pc1_vals, probs = c(1/3, 2/3))
+
+# Create group labels
+basin_pca_with_response$PC1_group <- cut(
+  basin_pca_with_response$PC1,
+  breaks = c(-Inf, cut_points[1], cut_points[2], Inf),
+  labels = c("Q1", "Q2", "Q3"),
+  right = TRUE
+)
+
+table(basin_pca_with_response$PC1_group)
+
+
+
+tab_basin_pca_with_response <- basin_pca_with_response%>%
+  group_by(PC1_group) %>%
+  summarise(PC1_min=round(min(PC1, na.rm=T),2),
+            PC1_max=round(max(PC1, na.rm=T),2), 
+            site_no =length(unique(Site_ID)))
+
+
+tab_basin_pca_with_response
+
+
+
+```
+
+basin character groups look relatively more similar
+
+```{r, echo=FALSE, include=F, warning=FALSE, fig.width=6, fig.height=3}
+# Set a color-blind friendly palette
+strat_colorsC <- c(
+  "Q1" = "#00BFC4",   
+  "Q2" = "#7CAE00",
+  "Q3" = "#F8766D"
+)
+```
+
+```{r, size='large', echo=F, include=T, warning=FALSE, cache=TRUE, fig.width=6, fig.height=4}
+ggplot(basin_pca_with_response, aes(x = PC1, fill = factor(PC1_group))) +
+  geom_histogram(bins = 30, alpha = 0.7, color = "black") +
+  scale_fill_manual(
+    values = strat_colorsC,
+    name = "PC1 Quantile",
+    labels = c("Small steep", "Q2", "Large branched")
+  ) +
+  theme_minimal() +
+  labs(title = "PC1 values by character quantile",
+       x = "PC1",
+       y = "Count")
+```
+
+
+
+```{r, size='large', echo=F, include=T, warning=FALSE, cache=TRUE, fig.width=6, fig.height=4}
+
+metab_units_area <- (expression(paste('Metabolism (g C', m^-2,' ',y^-1,')', sep = ' ')))
+low_p <- '#6e2f9e'
+high_p <- '#f4e6ff'
+
+low_er <- '#381d01'
+high_er <- '#fa9600'
+
+
+BN_pca_plot <- basin_pca_with_response%>%
+  group_by(Site_ID) %>%
+  summarise(
+    GPP = mean(GPP_filled, na.rm=T),
+    ER = mean(c(ER_filled*-1), na.rm=T),
+    PC1 =mean(PC1, na.rm=T))
+
+
+library(ggplot2)
+library(ggnewscale)  
+
+fig_combined1 <- ggplot(BN_pca_plot, aes(x = PC1)) +
+  # GPP points (upward triangle)
+  geom_point(aes(y = GPP, fill = GPP, color = GPP), shape = 24, size = 2, alpha=0.75) +
+  scale_fill_gradient(name = "GPP", low = low_p, high = high_p) +
+  scale_color_gradient(name = "GPP", low = low_p, high = high_p) +
+  # Reset fill scale so ER can have its own
+  new_scale_fill() +
+    new_scale_color() +
+  # ER points (downward triangle)
+  geom_point(aes(y = ER, fill = ER, color = ER), shape = 25, size = 2, alpha=0.75) +
+  scale_fill_gradient(name = "ER", low = low_er, high = high_er) +
+  scale_color_gradient(name = "ER", low = low_er, high = high_er) +
+  scale_y_continuous(name = metab_units_area, expand = expansion(mult = c(0, 0.05))) +
+  theme_classic() +
+      theme(
+    axis.text = element_text(size = 16),
+    axis.title = element_text(size = 16, colour = "black"),
+    legend.text = element_text(size = 16),
+    legend.title = element_text(size = 16),
+    panel.grid = element_blank()
+  )
+
+# ggsave(plot = fig_combined1, filename = paste("/Users/kellyloria/Documents/River_Recovery_Dynamics_Analysis/figures/LC_fig1c_25.png",sep=""),width=5.25,height=3.5,dpi=300)
+
+```
+
+
+However daily GPP looks fairly similar across all land cover types -
+despite the postive regression resuls with cropland
+
+```{r, size='large', echo=F, include=T, warning=FALSE, cache=TRUE, fig.width=6, fig.height=4}
+
+ggplot(basin_pca_with_response, aes(x = GPP_filled, fill = factor(PC1_group))) +
+  geom_histogram(bins = 30, alpha = 0.7, color = "black") +
+  scale_fill_manual(
+    values = strat_colorsC,
+    name = "PC1 Quantile",
+    labels = c("Small steep", "Q2", "Large branched")) + theme_minimal() +
+  labs(title = "GPP by basin character quantile",
+       x = "GPP",
+       y = "Count")
+```
+
+##### i. basin character Q1
+
+All open space or forested
+
+```{r, size='large', echo=F, include=T, warning=FALSE, cache=TRUE, fig.width=6, fig.height=4}
+
+basin_q1 <- basin_pca_with_response %>%
+dplyr::filter(PC1_group=="Q1") 
+
+unique(basin_q1$Site_ID)
+unique(basin_q1$Latitude)
+
+hist(basin_q1$GPP_filled,  breaks = 30)
+
+```
+
+##### ii. basin character Q2
+
+```{r, size='large', echo=F, include=T, warning=FALSE, cache=TRUE, fig.width=6, fig.height=4}
+
+basin_q2 <- basin_pca_with_response %>%
+dplyr::filter(PC1_group=="Q2") 
+
+
+unique(basin_q2$Site_ID)
+unique(basin_q2$Latitude)
+
+hist(basin_q2$GPP_filled)
+
+```
+
+##### iii. basin character Q3
+
+```{r, size='large', echo=F, include=T, warning=FALSE, cache=TRUE, fig.width=6, fig.height=4}
+
+basin_q3 <- basin_pca_with_response %>%
+dplyr::filter(PC1_group=="Q3")
+unique(basin_q3$Site_ID)
+unique(basin_q3$Latitude)
+
+hist(basin_q3$GPP_filled)
+
+```
+
+#### Daily synchrony basin Q1
+
+```{r, warning=F, size = 'small', echo=F, include=F}
+GPP_long_q1 <- basin_pca_with_response %>%
+  group_by(Site_ID, date, Lat, Lon) %>%
+  summarise(GPP_filled = mean(GPP_filled, na.rm = TRUE), .groups = "drop")
+
+GPP_wide_day_q1 <- GPP_long_q1 %>%
+  pivot_wider(
+    names_from = date,
+    values_from = GPP_filled)
+
+# Now, calculate spatial Synchrony in the time series using the Sncf() function
+RR_df.corr_BC_q1 <- Sncf(x=GPP_wide_day_q1$Lon,
+                   y=GPP_wide_day_q1$Lat,
+                   z=GPP_wide_day_q1[,4:ncol(GPP_wide_day_q1)],
+                   resamp = 1000, 
+                   latlon = T,
+                   na.rm = T) # allows for NA given each stream has 280 days per year
+
+
+plot(RR_df.corr_BC_q1)
+
+
+GPP_corrgram_summary.table <- summary(RR_df.corr_BC_q1)
+
+# Plot using ggplot for export
+# create a dataframe of the predicted values
+GPP.corr.pred.BC.Q1 <- data.frame(x = matrix(unlist(RR_df.corr_BC_q1$real$predicted$x)),
+                                             y = matrix(unlist(RR_df.corr_BC_q1$real$predicted$y)),
+                               time_scale = "daily",
+                               parameter = "GPP",
+                               strat = "Steep_small")
+
+## Sample average line
+Regional.synch <- GPP_corrgram_summary.table$Regional.synch
+GPP.corr.pred.BC.Q1$mean_synch <- round(Regional.synch,2)
+
+Regional.synch_x <-  round(GPP_corrgram_summary.table$estimates["intercepts", "cbar"], 0)
+GPP.corr.pred.BC.Q1$cbar <- Regional.synch_x
+
+
+# ...and a dataframe of the y values for the bootstrap prediction
+GPP.corr.bootValues.BC.Q1 <- as.data.frame(t(RR_df.corr_BC_q1$boot$boot.summary$predicted$y))
+
+# merge x and y values (min and max) for the bootstrap confidence intervals into a dataframe
+GPP.corr.boot.BC.Q1 <- data.frame(x = matrix(unlist(RR_df.corr_BC_q1$boot$boot.summary$predicted$x)),
+                                             yminGPP = GPP.corr.bootValues.BC.Q1$`0.025`,
+                                             ymaxGPP = GPP.corr.bootValues.BC.Q1$`0.975`,
+                               time_scale = "daily",
+                                  parameter = "GPP",
+                               strat = "Steep_small")
+
+```
+
+
+
+```{r, warning=F, size = 'small', echo=T, include=T, cache=TRUE}
+cat(paste0(
+  "$y.intercept: ", round(GPP_corrgram_summary.table$estimates["intercepts", "y"], 2), "\n",
+  "$Regional.synch: ", round(GPP_corrgram_summary.table$Regional.synch[1], 2), "\n",  
+  "$cbar: ", round(GPP_corrgram_summary.table$estimates["intercepts", "cbar"], 0), " km\n",
+  "$x.intercept: ", round(GPP_corrgram_summary.table$quantiles["0.5", "x"], 0), " km\n"
+))
+```
+
+#### Daily synchrony basin character Q2
+
+```{r, warning=F, size = 'small', echo=F, include=F}
+GPP_long_q2 <- basin_q2 %>%
+  group_by(Site_ID, date, Lat, Lon) %>%
+  summarise(GPP_filled = mean(GPP_filled, na.rm = TRUE), .groups = "drop")
+
+GPP_wide_day_q2 <- GPP_long_q2 %>%
+  pivot_wider(
+    names_from = date,
+    values_from = GPP_filled)
+
+# Now, calculate spatial Synchrony in the time series using the Sncf() function
+RR_df.corr_BC_q2 <- Sncf(x=GPP_wide_day_q2$Lon,
+                   y=GPP_wide_day_q2$Lat,
+                   z=GPP_wide_day_q2[,4:ncol(GPP_wide_day_q2)],
+                   resamp = 1000, 
+                   latlon = T,
+                   na.rm = T) # allows for NA given each stream has 280 days per year
+
+
+plot(RR_df.corr_BC_q2)
+
+
+GPP_corrgram_summary.table <- summary(RR_df.corr_BC_q2)
+
+# Plot using ggplot for export
+# create a dataframe of the predicted values
+GPP.corr.pred.BC.q2 <- data.frame(x = matrix(unlist(RR_df.corr_BC_q2$real$predicted$x)),
+                                             y = matrix(unlist(RR_df.corr_BC_q2$real$predicted$y)),
+                               time_scale = "daily",
+                               parameter = "GPP",
+                               strat = "Moderate")
+
+## Sample average line
+Regional.synch <- GPP_corrgram_summary.table$Regional.synch
+GPP.corr.pred.BC.q2$mean_synch <- round(Regional.synch,2)
+
+Regional.synch_x <-  round(GPP_corrgram_summary.table$estimates["intercepts", "cbar"], 0)
+GPP.corr.pred.BC.q2$cbar <- Regional.synch_x
+
+# ...and a dataframe of the y values for the bootstrap prediction
+GPP.corr.bootValues.BC.q2 <- as.data.frame(t(RR_df.corr_BC_q2$boot$boot.summary$predicted$y))
+
+# merge x and y values (min and max) for the bootstrap confidence intervals into a dataframe
+GPP.corr.boot.BC.q2 <- data.frame(x = matrix(unlist(RR_df.corr_BC_q2$boot$boot.summary$predicted$x)),
+                                             yminGPP = GPP.corr.bootValues.BC.q2$`0.025`,
+                                             ymaxGPP = GPP.corr.bootValues.BC.q2$`0.975`,
+                               time_scale = "daily",
+                                  parameter = "GPP",
+                               strat = "Moderate")
+```
+
+
+
+```{r, warning=F, size = 'small', echo=T, include=T, cache=TRUE}
+cat(paste0(
+  "$y.intercept: ", round(GPP_corrgram_summary.table$estimates["intercepts", "y"], 2), "\n",
+  "$Regional.synch: ", round(GPP_corrgram_summary.table$Regional.synch[1], 2), "\n",  
+  "$cbar: ", round(GPP_corrgram_summary.table$estimates["intercepts", "cbar"], 0), " km\n",
+  "$x.intercept: ", round(GPP_corrgram_summary.table$quantiles["0.5", "x"], 0), " km\n"
+))
+```
+
+#### Daily synchrony basin character Q3
+
+```{r, warning=F, size = 'small', echo=F, include=F}
+GPP_long_q3 <- basin_q3 %>%
+  group_by(Site_ID, date, Lat, Lon) %>%
+  summarise(GPP_filled = mean(GPP_filled, na.rm = TRUE), .groups = "drop")
+
+GPP_wide_day_q3 <- GPP_long_q3 %>%
+  pivot_wider(
+    names_from = date,
+    values_from = GPP_filled)
+
+# Now, calculate spatial Synchrony in the time series using the Sncf() function
+RR_df.corr_BC_q3 <- Sncf(x=GPP_wide_day_q3$Lon,
+                   y=GPP_wide_day_q3$Lat,
+                   z=GPP_wide_day_q3[,4:ncol(GPP_wide_day_q3)],
+                   resamp = 1000, 
+                   latlon = T,
+                   na.rm = T) # allows for NA given each stream has 280 days per year
+
+
+plot(RR_df.corr_BC_q3)
+
+
+GPP_corrgram_summary.table <- summary(RR_df.corr_BC_q3)
+
+# Plot using ggplot for export
+# create a dataframe of the predicted values
+GPP.corr.pred.BC.q3 <- data.frame(x = matrix(unlist(RR_df.corr_BC_q3$real$predicted$x)),
+                                             y = matrix(unlist(RR_df.corr_BC_q3$real$predicted$y)),
+                               time_scale = "daily",
+                               parameter = "GPP",
+                               strat = "Large_branched")
+
+## Sample average line
+Regional.synch <- GPP_corrgram_summary.table$Regional.synch
+GPP.corr.pred.BC.q3$mean_synch <- round(Regional.synch,2)
+
+Regional.synch_x <-  round(GPP_corrgram_summary.table$estimates["intercepts", "cbar"], 0)
+GPP.corr.pred.BC.q3$cbar <- Regional.synch_x
+
+
+# ...and a dataframe of the y values for the bootstrap prediction
+GPP.corr.bootValues.BC.q3 <- as.data.frame(t(RR_df.corr_BC_q3$boot$boot.summary$predicted$y))
+
+# merge x and y values (min and max) for the bootstrap confidence intervals into a dataframe
+GPP.corr.boot.BC.q3 <- data.frame(x = matrix(unlist(RR_df.corr_BC_q3$boot$boot.summary$predicted$x)),
+                                             yminGPP = GPP.corr.bootValues.BC.q3$`0.025`,
+                                             ymaxGPP = GPP.corr.bootValues.BC.q3$`0.975`,
+                               time_scale = "daily",
+                                  parameter = "GPP",
+                               strat = "Large_branched")
+
+```
+
+
+
+```{r, warning=F, size = 'small', echo=T, include=T, cache=TRUE}
+cat(paste0(
+  "$y.intercept: ", round(GPP_corrgram_summary.table$estimates["intercepts", "y"], 2), "\n",
+  "$Regional.synch: ", round(GPP_corrgram_summary.table$Regional.synch[1], 2), "\n",  
+  "$cbar: ", round(GPP_corrgram_summary.table$estimates["intercepts", "cbar"], 0), " km\n",
+  "$x.intercept: ", round(GPP_corrgram_summary.table$quantiles["0.5", "x"], 0), " km\n"
+))
+```
+
+```{r, echo=FALSE, include=F, warning=FALSE, fig.width=12, fig.height=8}
+
+pred_df_all_basin <- bind_rows(GPP.corr.pred.BC.Q1, GPP.corr.pred.BC.q2, GPP.corr.pred.BC.q3)%>%
+  mutate(x_rounded_5 = round(x / 5) * 5)%>%
+  group_by(time_scale, parameter, strat, x_rounded_5)%>%
+  summarise(across(everything(), mean, na.rm = TRUE), .groups = "drop") %>%dplyr::filter(x<half_dist_km)
+
+
+ci_df_all_basin   <- bind_rows(GPP.corr.boot.BC.Q1, GPP.corr.boot.BC.q2, GPP.corr.boot.BC.q3 ) %>%
+  mutate(x_rounded_5 = round(x / 5) * 5)%>%
+  group_by(time_scale, parameter, strat, x_rounded_5)%>%
+  summarise(across(everything(), mean, na.rm = TRUE), .groups = "drop")%>%dplyr::filter(x<half_dist_km)
+
+```
+
+##### Calculate the percent difference between different basin character types
+
+```{r, echo=F, include=T, warning=FALSE, fig.width=12, fig.height=8}
+
+# Spread the data so each LC Q becomes a column
+pred_wide_basin <- pred_df_all_basin %>%
+  dplyr::select(x_rounded_5, y, strat) %>%
+  pivot_wider(names_from = strat, values_from = y)
+
+# Calculate percent differences from daily for each other time scale
+# Formula: ((other - daily) / daily) * 100
+pred_diff_basin <- pred_wide_basin %>%
+  mutate(
+    Steep_small_diff = (abs(Steep_small - Steep_small) / Steep_small) * 100,
+    Moderate_diff = (abs(Steep_small - Moderate) / Steep_small) * 100,
+    Large_branched_diff = (abs(Steep_small - Large_branched) / Steep_small) * 100)
+
+pred_diff_basin
+```
+
+```{r, echo=FALSE, include=F, warning=FALSE, fig.width=6, fig.height=3}
+# Set a color-blind friendly palette
+strat_colors <- c(
+  "Steep_small" = "#00BFC4",   
+  "Moderate" = "#7CAE00",
+  "Large_branched" = "#F8766D"
+)
+```
+
+#### Look when synchrony dips below the sample average/ regional synch value for each timescale:
+
+This distances where parameters are no longer regionally synchronous
+
+```{r, warning=F, size = 'small', echo=T, include=T}
+
+intersection_df <- pred_df_all_basin %>%
+  group_by(strat) %>%
+  summarise(
+    y= mean(mean_synch),
+    x = mean(cbar))
+
+intersection_df
+```
+
+```{r, echo=FALSE, include=F, warning=FALSE, fig.width=8, fig.height=6}
+
+###
+GPP_synch_spline_BC <- ggplot() +
+  # Ribbon for CI
+  geom_ribbon(data = ci_df_all_basin,
+              aes(x = x, ymin = yminGPP, ymax = ymaxGPP, fill = strat),
+              alpha = 0.1) +
+  # Main spline lines
+  geom_line(data = pred_df_all_basin,
+            aes(x = x, y = y, color = strat),
+            size = 1) +
+   # Horizontal mean synchrony lines
+   geom_segment(data = intersection_df,
+               aes(x = 0, xend = x, 
+                   y = y, yend = y,
+                   color = strat),
+               linetype = "dashed") +
+  # Draw vertical segments from bottom to y_intersect
+  geom_segment(data = intersection_df,
+               aes(x = x, xend = x, 
+                   y = -0.25, yend = y,
+                   color = strat),
+               linetype = "dashed") +
+    ylim(-0.25, 0.75) +
+  labs(title = "GPP and morphology",
+       y = "Correlation",
+       x = "Distance (km)",
+       fill = "Stream type PC1",
+       color = "Stream type PC1") +
+    geom_vline(xintercept = 807, color="grey40", lty=3) +
+    scale_color_manual(values = strat_colors,
+                     labels = c("Large branched", "Moderate", "Steep small")) +
+  scale_fill_manual(values = strat_colors,
+                    labels = c("Large branched", "Moderate", "Steep small")) +
+  theme_classic() +
+  theme(legend.position = "right")
+
+GPP_synch_spline_BC
+
+```
+
+
+Catchments with underlying metamorphic rock are more similar than
+igneous or sedimentary
+
+### Quantify synchrony decay with distance:
+
+Where b parameter represents the decay rate: higher b = faster loss of
+synchrony with distance.
+
+```{r, warning=F, size = 'small', echo=F, include=T}
+
+fit_models <- pred_df_all_basin %>%
+  group_by(strat) %>%
+    filter(x<cbar)%>%
+  nest() %>%
+  mutate(model = map(data, ~ nls(y ~ a * exp(-b * x), data = ., start = list(a = 1, b = 0.001))),
+         params = map(model, tidy)) %>%
+  unnest(params) %>%
+  mutate(across(c(estimate, std.error, statistic, p.value), ~ round(.x, 4), .names = "rounded_{.col}"))
+
+fit_models_tab <- as.data.frame(fit_models)%>%
+  dplyr::select(strat, term,rounded_estimate: rounded_p.value)
+
+fit_models_tab
+```
+
+### ER.
+
+#### Daily synchrony basin Q1
+
+```{r, warning=F, size = 'small', echo=F, include=F}
+ER_long_q1 <- basin_q1 %>%
+  group_by(Site_ID, date, Lat, Lon) %>%
+  summarise(ER_filled = mean(ER_filled, na.rm = TRUE), .groups = "drop")
+
+ER_wide_day_q1 <- ER_long_q1 %>%
+  pivot_wider(
+    names_from = date,
+    values_from = ER_filled)
+
+# Now, calculate spatial Synchrony in the time series using the Sncf() function
+RR_df.corr_BC_q1 <- Sncf(x=ER_wide_day_q1$Lon,
+                   y=ER_wide_day_q1$Lat,
+                   z=ER_wide_day_q1[,4:ncol(ER_wide_day_q1)],
+                   resamp = 1000, 
+                   latlon = T,
+                   na.rm = T) # allows for NA given each stream has 280 days per year
+
+
+plot(RR_df.corr_BC_q1)
+
+
+ER_corrgram_summary.table <- summary(RR_df.corr_BC_q1)
+
+# Plot using ggplot for export
+# create a dataframe of the predicted values
+ER.corr.pred.BC.Q1 <- data.frame(x = matrix(unlist(RR_df.corr_BC_q1$real$predicted$x)),
+                                             y = matrix(unlist(RR_df.corr_BC_q1$real$predicted$y)),
+                               time_scale = "daily",
+                               parameter = "ER",
+                               strat = "Steep_small")
+
+## Sample average line
+Regional.synch <- ER_corrgram_summary.table$Regional.synch
+ER.corr.pred.BC.Q1$mean_synch <- round(Regional.synch,2)
+
+Regional.synch_x <-  round(ER_corrgram_summary.table$estimates["intercepts", "cbar"], 0)
+ER.corr.pred.BC.Q1$cbar <- Regional.synch_x
+
+
+# ...and a dataframe of the y values for the bootstrap prediction
+ER.corr.bootValues.BC.Q1 <- as.data.frame(t(RR_df.corr_BC_q1$boot$boot.summary$predicted$y))
+
+# merge x and y values (min and max) for the bootstrap confidence intervals into a dataframe
+ER.corr.boot.BC.Q1 <- data.frame(x = matrix(unlist(RR_df.corr_BC_q1$boot$boot.summary$predicted$x)),
+                                             yminER = ER.corr.bootValues.BC.Q1$`0.025`,
+                                             ymaxER = ER.corr.bootValues.BC.Q1$`0.975`,
+                               time_scale = "daily",
+                                  parameter = "ER",
+                               strat = "Steep_small")
+
+```
+
+
+
+```{r, warning=F, size = 'small', echo=T, include=T, cache=TRUE}
+cat(paste0(
+  "$y.intercept: ", round(ER_corrgram_summary.table$estimates["intercepts", "y"], 2), "\n",
+  "$Regional.synch: ", round(ER_corrgram_summary.table$Regional.synch[1], 2), "\n",  
+  "$cbar: ", round(ER_corrgram_summary.table$estimates["intercepts", "cbar"], 0), " km\n",
+  "$x.intercept: ", round(ER_corrgram_summary.table$quantiles["0.5", "x"], 0), " km\n"
+))
+```
+
+#### Daily synchrony basin character Q2
+
+```{r, warning=F, size = 'small', echo=F, include=F}
+ER_long_q2 <- basin_q2 %>%
+  group_by(Site_ID, date, Lat, Lon) %>%
+  summarise(ER_filled = mean(ER_filled, na.rm = TRUE), .groups = "drop")
+
+ER_wide_day_q2 <- ER_long_q2 %>%
+  pivot_wider(
+    names_from = date,
+    values_from = ER_filled)
+
+# Now, calculate spatial Synchrony in the time series using the Sncf() function
+RR_df.corr_BC_q2 <- Sncf(x=ER_wide_day_q2$Lon,
+                   y=ER_wide_day_q2$Lat,
+                   z=ER_wide_day_q2[,4:ncol(ER_wide_day_q2)],
+                   resamp = 1000, 
+                   latlon = T,
+                   na.rm = T) # allows for NA given each stream has 280 days per year
+
+
+plot(RR_df.corr_BC_q2)
+
+
+ER_corrgram_summary.table <- summary(RR_df.corr_BC_q2)
+
+# Plot using ggplot for export
+# create a dataframe of the predicted values
+ER.corr.pred.BC.q2 <- data.frame(x = matrix(unlist(RR_df.corr_BC_q2$real$predicted$x)),
+                                             y = matrix(unlist(RR_df.corr_BC_q2$real$predicted$y)),
+                               time_scale = "daily",
+                               parameter = "ER",
+                               strat = "Moderate")
+
+## Sample average line
+Regional.synch <- ER_corrgram_summary.table$Regional.synch
+ER.corr.pred.BC.q2$mean_synch <- round(Regional.synch,2)
+
+Regional.synch_x <-  round(ER_corrgram_summary.table$estimates["intercepts", "cbar"], 0)
+ER.corr.pred.BC.q2$cbar <- Regional.synch_x
+
+# ...and a dataframe of the y values for the bootstrap prediction
+ER.corr.bootValues.BC.q2 <- as.data.frame(t(RR_df.corr_BC_q2$boot$boot.summary$predicted$y))
+
+# merge x and y values (min and max) for the bootstrap confidence intervals into a dataframe
+ER.corr.boot.BC.q2 <- data.frame(x = matrix(unlist(RR_df.corr_BC_q2$boot$boot.summary$predicted$x)),
+                                             yminER = ER.corr.bootValues.BC.q2$`0.025`,
+                                             ymaxER = ER.corr.bootValues.BC.q2$`0.975`,
+                               time_scale = "daily",
+                                  parameter = "ER",
+                               strat = "Moderate")
+```
+
+
+
+```{r, warning=F, size = 'small', echo=T, include=T, cache=TRUE}
+cat(paste0(
+  "$y.intercept: ", round(ER_corrgram_summary.table$estimates["intercepts", "y"], 2), "\n",
+  "$Regional.synch: ", round(ER_corrgram_summary.table$Regional.synch[1], 2), "\n",  
+  "$cbar: ", round(ER_corrgram_summary.table$estimates["intercepts", "cbar"], 0), " km\n",
+  "$x.intercept: ", round(ER_corrgram_summary.table$quantiles["0.5", "x"], 0), " km\n"
+))
+```
+
+#### Daily synchrony basin character Q3
+
+```{r, warning=F, size = 'small', echo=F, include=F}
+ER_long_q3 <- basin_q3 %>%
+  group_by(Site_ID, date, Lat, Lon) %>%
+  summarise(ER_filled = mean(ER_filled, na.rm = TRUE), .groups = "drop")
+
+ER_wide_day_q3 <- ER_long_q3 %>%
+  pivot_wider(
+    names_from = date,
+    values_from = ER_filled)
+
+# Now, calculate spatial Synchrony in the time series using the Sncf() function
+RR_df.corr_BC_q3 <- Sncf(x=ER_wide_day_q3$Lon,
+                   y=ER_wide_day_q3$Lat,
+                   z=ER_wide_day_q3[,4:ncol(ER_wide_day_q3)],
+                   resamp = 1000, 
+                   latlon = T,
+                   na.rm = T) # allows for NA given each stream has 280 days per year
+
+
+plot(RR_df.corr_BC_q3)
+
+
+ER_corrgram_summary.table <- summary(RR_df.corr_BC_q3)
+
+# Plot using ggplot for export
+# create a dataframe of the predicted values
+ER.corr.pred.BC.q3 <- data.frame(x = matrix(unlist(RR_df.corr_BC_q3$real$predicted$x)),
+                                             y = matrix(unlist(RR_df.corr_BC_q3$real$predicted$y)),
+                               time_scale = "daily",
+                               parameter = "ER",
+                               strat = "Large_branched")
+
+## Sample average line
+Regional.synch <- ER_corrgram_summary.table$Regional.synch
+ER.corr.pred.BC.q3$mean_synch <- round(Regional.synch,2)
+
+Regional.synch_x <-  round(ER_corrgram_summary.table$estimates["intercepts", "cbar"], 0)
+ER.corr.pred.BC.q3$cbar <- Regional.synch_x
+
+
+# ...and a dataframe of the y values for the bootstrap prediction
+ER.corr.bootValues.BC.q3 <- as.data.frame(t(RR_df.corr_BC_q3$boot$boot.summary$predicted$y))
+
+# merge x and y values (min and max) for the bootstrap confidence intervals into a dataframe
+ER.corr.boot.BC.q3 <- data.frame(x = matrix(unlist(RR_df.corr_BC_q3$boot$boot.summary$predicted$x)),
+                                             yminER = ER.corr.bootValues.BC.q3$`0.025`,
+                                             ymaxER = ER.corr.bootValues.BC.q3$`0.975`,
+                               time_scale = "daily",
+                                  parameter = "ER",
+                               strat = "Large_branched")
+
+```
+
+
+
+```{r, warning=F, size = 'small', echo=T, include=T, cache=TRUE}
+cat(paste0(
+  "$y.intercept: ", round(ER_corrgram_summary.table$estimates["intercepts", "y"], 2), "\n",
+  "$Regional.synch: ", round(ER_corrgram_summary.table$Regional.synch[1], 2), "\n",  
+  "$cbar: ", round(ER_corrgram_summary.table$estimates["intercepts", "cbar"], 0), " km\n",
+  "$x.intercept: ", round(ER_corrgram_summary.table$quantiles["0.5", "x"], 0), " km\n"
+))
+```
+
+```{r, echo=FALSE, include=F, warning=FALSE, fig.width=12, fig.height=8}
+
+pred_df_all_basin <- bind_rows(ER.corr.pred.BC.Q1, ER.corr.pred.BC.q2, ER.corr.pred.BC.q3)%>%
+  mutate(x_rounded_5 = round(x / 5) * 5)%>%
+  group_by(time_scale, parameter, strat, x_rounded_5)%>%
+  summarise(across(everything(), mean, na.rm = TRUE), .groups = "drop") %>%dplyr::filter(x<half_dist_km)
+
+
+ci_df_all_basin   <- bind_rows(ER.corr.boot.BC.Q1, ER.corr.boot.BC.q2, ER.corr.boot.BC.q3 ) %>%
+  mutate(x_rounded_5 = round(x / 5) * 5)%>%
+  group_by(time_scale, parameter, strat, x_rounded_5)%>%
+  summarise(across(everything(), mean, na.rm = TRUE), .groups = "drop")%>%dplyr::filter(x<half_dist_km)
+
+```
+
+##### Calculate the percent difference between different basin character types
+
+```{r, echo=F, include=T, warning=FALSE, fig.width=12, fig.height=8}
+
+# Spread the data so each LC Q becomes a column
+pred_wide_basin <- pred_df_all_basin %>%
+  dplyr::select(x_rounded_5, y, strat) %>%
+  pivot_wider(names_from = strat, values_from = y)
+
+# Calculate percent differences from daily for each other time scale
+# Formula: ((other - daily) / daily) * 100
+pred_diff_basin <- pred_wide_basin %>%
+  mutate(
+    Steep_small_diff = (abs(Steep_small - Steep_small) / Steep_small) * 100,
+    Moderate_diff = (abs(Steep_small - Moderate) / Steep_small) * 100,
+    Large_branched_diff = (abs(Steep_small - Large_branched) / Steep_small) * 100)
+
+pred_diff_basin
+```
+
+```{r, echo=FALSE, include=F, warning=FALSE, fig.width=6, fig.height=3}
+# Set a color-blind friendly palette
+strat_colors <- c(
+  "Steep_small" = "#00BFC4",   
+  "Moderate" = "#7CAE00",
+  "Large_branched" = "#F8766D"
+)
+```
+
+#### Look when synchrony dips below the sample average/ regional synch value for each timescale:
+
+This distances where parameters are no longer regionally synchronous
+
+```{r, warning=F, size = 'small', echo=T, include=T}
+
+intersection_df <- pred_df_all_basin %>%
+  group_by(strat) %>%
+  summarise(
+    y= mean(mean_synch),
+    x = mean(cbar))
+
+intersection_df
+```
+
+```{r, echo=FALSE, include=F, warning=FALSE, fig.width=8, fig.height=6}
+
+###
+ER_synch_spline_BC <- ggplot() +
+  # Ribbon for CI
+  geom_ribbon(data = ci_df_all_basin,
+              aes(x = x, ymin = yminER, ymax = ymaxER, fill = strat),
+              alpha = 0.1) +
+  # Main spline lines
+  geom_line(data = pred_df_all_basin,
+            aes(x = x, y = y, color = strat),
+            size = 1) +
+   # Horizontal mean synchrony lines
+   geom_segment(data = intersection_df,
+               aes(x = 0, xend = x, 
+                   y = y, yend = y,
+                   color = strat),
+               linetype = "dashed") +
+  # Draw vertical segments from bottom to y_intersect
+  geom_segment(data = intersection_df,
+               aes(x = x, xend = x, 
+                   y = -0.25, yend = y,
+                   color = strat),
+               linetype = "dashed") +
+    ylim(-0.25, 0.75) +
+  labs(title = "ER and morphology",
+       y = "Correlation",
+       x = "Distance (km)",
+       fill = "Stream type PC1",
+       color = "Stream type PC1") +
+      geom_vline(xintercept = 1083, color="grey40", lty=3) +
+    scale_color_manual(values = strat_colors,
+                     labels = c("Large branched", "Moderate", "Steep small")) +
+  scale_fill_manual(values = strat_colors,
+                    labels = c("Large branched", "Moderate", "Steep small")) +
+  theme_classic() +
+  theme(legend.position = "right")
+
+ER_synch_spline_BC
+
+```
+
+
+Catchments with underlying metamorphic rock are more similar than
+igneous or sedimentary
+
+### Quantify synchrony decay with distance:
+
+Where b parameter represents the decay rate: higher b = faster loss of
+synchrony with distance.
+
+```{r, warning=F, size = 'small', echo=F, include=T}
+
+fit_models <- pred_df_all_basin %>%
+  group_by(strat) %>%
+      filter(x<cbar)%>%
+  nest() %>%
+  mutate(model = map(data, ~ nls(y ~ a * exp(-b * x), data = ., start = list(a = 1, b = 0.001))),
+         params = map(model, tidy)) %>%
+  unnest(params) %>%
+  mutate(across(c(estimate, std.error, statistic, p.value), ~ round(.x, 4), .names = "rounded_{.col}"))
+
+fit_models_tab <- as.data.frame(fit_models)%>%
+  dplyr::select(strat, term,rounded_estimate: rounded_p.value)
+
+fit_models_tab
+```
+
+
+####
+
+```{r, warning=F, size = 'small', echo=F,include=TRUE, fig.width=6, fig.height=9}
+# Arrange plots with shared legend at the bottom
+library(ggpubr)
+
+spline_grid_landscape <- ggarrange(
+  GPP_synch_spline_LC,
+  ER_synch_spline_LC,
+GPP_synch_spline_BC,
+ER_synch_spline_BC,
+  ncol = 1, nrow = 4,
+  common.legend = F, 
+  legend = "right",
+  align = "v")
+
+spline_grid_landscape
+```
+
+```{r, warning=F, size = 'small', echo=F, include=FALSE}
+# ggsave("/Users/kellyloria/Documents/River_Recovery_Dynamics_Analysis/figures/metab_LC_GL_BC_splines.png", plot = spline_grid_landscape, width = 4.75, height = 9.5, units = "in")
+
+```

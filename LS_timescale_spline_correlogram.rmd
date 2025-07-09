@@ -1,0 +1,2153 @@
+---
+title: "Part 1 & 2 : Spline Correlogram analysis for synchrony in aquatic ecosystem productivity - Temporal scales"
+author: "K. Loria"
+date: "`r Sys.Date()`"
+output:
+   html_document:
+    theme: simplex
+    highlight: tango
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+```{=html}
+<style type="text/css">
+body, td {font-size: 13px;}
+code.r{font-size: 9px;}
+pre {font-size: 11px}
+</style>
+```
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(warning = F, message = F)
+knitr::opts_knit$set(root.dir = '/Users/kellyloria/Documents/')
+def.chunk.hook  <- knitr::knit_hooks$get("chunk")
+knitr::knit_hooks$set(chunk = function(x, options) {
+  x <- def.chunk.hook(x, options)
+  ifelse(options$size != "normalsize", paste0("\n \\", options$size,"\n\n", x, "\n\n \\normalsize"), x)
+})
+
+```
+
+```{r, echo=FALSE, include=FALSE}
+library(data.table) # Allows fast reading and writing of files
+library(ggplot2)    # For plotting
+library(tidyverse)  # For data processing
+library(lubridate)  # For date processing
+library(reshape2)   # For reshaping the data into long format
+library(ncf)        # For Synchrony analysis
+library(grid)       # for labeling the gridded plot
+library(gridExtra)  # for creating a labeled, gridded plot
+library(FSA)        # For making depletion estimates
+library(knitr)      # For making tidy tables
+library(broom)
+library(grid)
+
+```
+
+## Background: Synchrony estimates using Sncf{ncf}
+
+#### How it works:
+
+Sncf computes the nonparametric spatial (auto/cross-)correlation
+function for multivariate time series data observed across spatial
+locations.
+
+1.  Takes time series data z from n locations (one row per location, one
+    column per time step).
+
+2.  Calculates the pairwise correlations between time series at each
+    location pair.
+
+3.  Bins those correlations based on distance between sites (using
+    latitude and longitude if latlon = TRUE).
+
+4.  Fits a smoothing spline to estimate the average correlation as a
+    function of distance
+    
+It can handle missing data, where:
+na.rm = TRUE: Missing values are allowed; only overlapping time steps are used in correlations.
+
+
+#### Metrics to consider:
+
+-   '\real$predicted\$y[1]' = Synchrony at (almost) zero distance –
+    often max synchrony.
+      
+      - This is the first predicted value from the fitted nonparametric spline of the spatial correlation function
+      
+      - Estimated synchrony at the smallest distance bin
+
+
+-   '\$y.intercept' = Extrapolated synchrony at exactly zero distance 
+      
+      - The theoretical synchrony among perfectly co-located sites
+
+-   '\$cbar' = Regional mean synchrony across all distances
+
+-   '\$x.intercept'	= Distance at which synchrony drops to 0
+
+-   '\$e.intercept' = Distance where synchrony drops to 1/e of max (decay scale)
+
+
+###  Fletcher, R., & Fortin, M. (2018):
+we should truncate the range of lag distances at which we consider spatial 
+dependence to approximately ½ to 2 = 3 the total distance observed.
+
+```{r, echo=FALSE, include=F, warning=FALSE, fig.width=12, fig.height=8}
+# https://github.com/gpvalentine/SE_Trout/blob/main/Analysis/SE_Trout_Correlograms.R
+
+river_metab_dat <-readRDS("/Users/kellyloria/Documents/River_Recovery_Dynamics_Analysis/data/stream_spline_cor_df.rds") %>% mutate(GPP_filled = if_else(GPP_filled <= 0, 0.0001, GPP_filled),
+          ER_filled = if_else(ER_filled >= 0, -0.0001, ER_filled))
+
+names(river_metab_dat)
+```
+
+```{r, echo=FALSE, include=F, warning=FALSE, fig.width=12, fig.height=8}
+### read in prism data for PPT
+
+PPT_dat <-readRDS("/Users/kellyloria/Documents/River_Recovery_Dynamics_Analysis/data/Clim_data/PRISM_stream.rds")%>%
+  mutate(Site_ID=as.character(Name))
+
+
+StreamLight_dat <- read.csv("/Users/kellyloria/Documents/River_Recovery_Dynamics_Analysis/data/doi_10_5061_dryad_bcc2fqzj2__v20230622/data_citation/7_river_light.csv") %>%
+  mutate(date = lubridate::as_date(date, format="%Y-%m-%d")) %>%
+  mutate(Site_ID1 = str_remove(site, "^nwis_")) %>%
+  mutate(Site_ID = str_remove(Site_ID1, "^0+"))
+
+
+river_metab_dat1 <- river_metab_dat%>%
+  left_join(PPT_dat, by=c("date"="Date", "Site_ID")) %>%
+  dplyr::select(site:TmaxC) 
+
+river_metab_dat1 <- river_metab_dat1%>%
+  left_join(StreamLight_dat, by=c("date", "site", "Site_ID"))
+
+intersect(unique(river_metab_dat1$site), unique(StreamLight_dat$site))
+
+
+setdiff(unique(river_metab_dat1$site), unique(StreamLight_dat$site)) # Sites in metab but not in light
+setdiff(unique(StreamLight_dat$site), unique(river_metab_dat1$site)) # Sites in light but not in metab
+
+
+
+sites_keep <- read.csv("/Users/kellyloria/Documents/River_Recovery_Dynamics_Analysis/figures/Map_data_for_nested_reach.csv")%>%
+  filter(keep == 1) %>%
+  dplyr::select(Site_ID:stream_order)
+
+
+# Filter river_metab_dat to keep only Site_IDs in sites_keep
+river_metab_dat1 <- river_metab_dat1 %>%
+  filter(Site_ID %in% sites_keep$Site_ID)
+
+unique(river_metab_dat1$Site_ID)
+```
+
+
+```{r, echo=FALSE, include=F, warning=FALSE, fig.width=12, fig.height=8}
+library(dplyr)
+library(geodist)
+
+# Get site centroids
+site_coords <- river_metab_dat1 %>%
+  group_by(Site_ID) %>%
+  summarise(Lat = mean(Lat), Lon = mean(Lon), .groups = "drop")
+
+# Calculate the overall mean coordinates
+mean_lat <- median(site_coords$Lat)
+mean_lon <- median(site_coords$Lon)
+
+# Find site closest to mean coordinates using geodist
+mean_coords <- data.frame(Lat = mean_lat, Lon = mean_lon)
+site_coords_df <- data.frame(Lat = site_coords$Lat, Lon = site_coords$Lon)
+
+distances_to_mean <- geodist(site_coords_df, mean_coords, measure = "geodesic") / 1000
+closest_index <- which.min(distances_to_mean)
+
+# Use the closest site as the reference
+ref_site <- site_coords[closest_index, ]
+
+# Compute distances from the reference site to all others
+ref_coords <- data.frame(Lat = ref_site$Lat, Lon = ref_site$Lon)
+distances_from_ref <- geodist(site_coords_df, ref_coords, measure = "geodesic") / 1000
+
+# Add distance column
+site_coords <- site_coords %>%
+  mutate(distance_km = as.numeric(distances_from_ref))
+
+hist(site_coords$distance_km)
+
+
+# Get 2/3 cut off 
+
+half_dist_km <- max(site_coords$distance_km)/ 2
+half_dist_km
+twothirds_dist_km <- max(site_coords$distance_km) * (2/3)
+twothirds_dist_km
+
+```
+
+## Part 1: Synchrony in metabolism at differnt timescales
+
+Compare synchrony for GPP and ER from 56 different sites in Marzolf
+dataset at different timescales:
+
+-   Daily
+
+-   Weekly (mean)
+
+-   Monthly (mean)
+
+-   Quarterly (3 month mean)
+
+-   Yearly (mean)
+
+### A. GPP synchrony at differnt timescales:
+
+#### GPP- Daily synchrony
+
+```{r, warning=F, size = 'small', echo=T, include=T, cache=TRUE}
+
+#### Daily synchrony
+
+river_metab_dat<-as.data.frame(river_metab_dat1)
+
+GPP_long <- river_metab_dat1 %>%
+  group_by(Site_ID, date, Lat, Lon) %>%
+  summarise(GPP_filled = mean(GPP_filled, na.rm = TRUE), .groups = "drop")
+
+GPP_wide_day <- GPP_long %>%
+  pivot_wider(
+    names_from = date,
+    values_from = GPP_filled)
+
+# Now, calculate spatial Synchrony in the time series using the Sncf() function
+RR_df.corr_day <- Sncf(x=GPP_wide_day$Lon,
+                   y=GPP_wide_day$Lat,
+                   z=GPP_wide_day[,4:ncol(GPP_wide_day)],
+                   resamp = 1000, 
+                   latlon = T,
+                   na.rm = T) # allows for NA given each stream has 280 days per year
+
+plot(RR_df.corr_day)
+
+GPP_corrgram_summary.table <- summary(RR_df.corr_day)
+Regional.synch <- GPP_corrgram_summary.table$Regional.synch
+
+
+# Plot using ggplot for export
+# create a dataframe of the predicted values
+GPP.corr.pred.df.day <- data.frame(x = matrix(unlist(RR_df.corr_day$real$predicted$x)),
+                                             y = matrix(unlist(RR_df.corr_day$real$predicted$y)),
+                               time_scale = "daily",
+                               parameter = "GPP")
+
+## Sample average line
+GPP.corr.pred.df.day$mean_synch <- round(Regional.synch,2)
+Regional.synch_x <-  round(GPP_corrgram_summary.table$estimates["intercepts", "cbar"], 0)
+GPP.corr.pred.df.day$cbar <- Regional.synch_x
+
+# ...and a dataframe of the y values for the bootstrap prediction
+GPP.corr.bootValues.df <- as.data.frame(t(RR_df.corr_day$boot$boot.summary$predicted$y))
+
+# merge x and y values (min and max) for the bootstrap confidence intervals into a dataframe
+GPP.corr.boot.df.day <- data.frame(x = matrix(unlist(RR_df.corr_day$boot$boot.summary$predicted$x)),
+                                             yminGPP = GPP.corr.bootValues.df$`0.025`,
+                                             ymaxGPP = GPP.corr.bootValues.df$`0.975`,
+                               time_scale = "daily",
+                                  parameter = "GPP")
+
+
+
+```
+
+```{r, warning=F, size = 'small', echo=F, include=T, cache=TRUE}
+
+cat(paste0(
+  "$y.intercept: ", round(GPP_corrgram_summary.table$estimates["intercepts", "y"], 2), "\n",
+  "$Regional.synch: ", round(GPP_corrgram_summary.table$Regional.synch[1], 2), "\n",  
+  "$cbar: ", round(GPP_corrgram_summary.table$estimates["intercepts", "cbar"], 0), " km\n",
+  "$x.intercept: ", round(GPP_corrgram_summary.table$quantiles["0.5", "x"], 0), " km\n"
+))
+
+```
+
+#### GPP- Weekly synchrony
+
+```{r, warning=F, size = 'small', echo=F, include=F, cache=TRUE}
+#### Weekly synchrony
+
+GPP_week <-  river_metab_dat1 %>%
+  mutate(week=week(date))%>%
+  group_by(Site_ID, week, year, Lat, Lon) %>%
+  summarise(GPP_filled = mean(GPP_filled, na.rm=T))
+
+GPP_wide_week <- GPP_week %>%
+  dplyr::select(Site_ID, Lon, Lat, week, year, GPP_filled) %>%
+  pivot_wider(names_from = c(year, week), values_from = GPP_filled) %>%
+  # Reorder columns: keep Site_ID, Lon, Lat first, then order year_week columns
+  {
+    static_cols <- c("Site_ID", "Lon", "Lat")
+    dynamic_cols <- setdiff(names(.), static_cols)
+    
+    # Extract year and week and sort
+    sorted_dynamic_cols <- dynamic_cols[order(
+      as.integer(sub("^(\\d+)_\\d+$", "\\1", dynamic_cols)),   # year part
+      as.integer(sub("^\\d+_(\\d+)$", "\\1", dynamic_cols))    # week part
+    )]
+    
+    dplyr::select(., all_of(static_cols), all_of(sorted_dynamic_cols))
+  }
+
+GPP_wide_week_1 <-na.omit(GPP_wide_week)
+
+# Now, calculate spatial Synchrony in the time series using the Sncf() function
+RR_df.corr_wk <- Sncf(x=GPP_wide_week$Lon,
+                   y=GPP_wide_week$Lat,
+                   z=GPP_wide_week[,4:ncol(GPP_wide_week)],
+                   resamp = 1000, 
+                   latlon = T,
+                   na.rm=T)
+
+
+plot(RR_df.corr_wk)
+
+
+GPP_corrgram_summary.table <- summary(RR_df.corr_wk)
+
+# Plot using ggplot for export
+# create a dataframe of the predicted values
+GPP.corr.pred.df.wk <- data.frame(x = matrix(unlist(RR_df.corr_wk$real$predicted$x)),
+                                             y = matrix(unlist(RR_df.corr_wk$real$predicted$y)),
+                                     time_scale = "weekly",
+                                     parameter = "GPP")
+
+## Sample average line
+
+Regional.synch <- GPP_corrgram_summary.table$Regional.synch
+GPP.corr.pred.df.wk$mean_synch <- round(Regional.synch,2)
+
+Regional.synch_x <-  round(GPP_corrgram_summary.table$estimates["intercepts", "cbar"], 0)
+GPP.corr.pred.df.wk$cbar <- Regional.synch_x
+
+
+# ...and a dataframe of the y values for the bootstrap prediction
+GPP.corr.bootValues.df <- as.data.frame(t(RR_df.corr_wk$boot$boot.summary$predicted$y))
+
+# merge x and y values (min and max) for the bootstrap confidence intervals into a dataframe
+GPP.corr.boot.df.wk <- data.frame(x = matrix(unlist(RR_df.corr_wk$boot$boot.summary$predicted$x)),
+                                             yminGPP = GPP.corr.bootValues.df$`0.025`,
+                                             ymaxGPP = GPP.corr.bootValues.df$`0.975`,
+                                     time_scale = "weekly",
+                                     parameter = "GPP")
+```
+
+
+```{r, warning=F, size = 'small', echo=F, include=T, cache=TRUE}
+
+cat(paste0(
+  "$y.intercept: ", round(GPP_corrgram_summary.table$estimates["intercepts", "y"], 2), "\n",
+  "$Regional.synch: ", round(GPP_corrgram_summary.table$Regional.synch[1], 2), "\n",  
+  "$cbar: ", round(GPP_corrgram_summary.table$estimates["intercepts", "cbar"], 0), " km\n",
+  "$x.intercept: ", round(GPP_corrgram_summary.table$quantiles["0.5", "x"], 0), " km\n"
+))
+
+```
+
+#### GPP- Monthly synchrony
+
+```{r, warning=F, size = 'small', echo=F, include=F, cache=TRUE}
+
+GPP_month <-  river_metab_dat1 %>%
+  mutate(month=month(date))%>%
+  group_by(Site_ID, month, year, Lat, Lon) %>%
+  summarise(GPP_filled = mean(GPP_filled, na.rm=T))
+
+
+GPP_wide_month <- GPP_month %>%
+ # dplyr::filter(year>2011) %>%
+  dplyr::select(Site_ID, Lon, Lat, month, year, GPP_filled) %>%
+  pivot_wider(names_from = c(year, month), values_from = GPP_filled) %>%
+  # Reorder columns: keep Site_ID, Lon, Lat first, then order year_week columns
+  {
+    static_cols <- c("Site_ID", "Lon", "Lat")
+    dynamic_cols <- setdiff(names(.), static_cols)
+    
+    # Extract year and week and sort
+    sorted_dynamic_cols <- dynamic_cols[order(
+      as.integer(sub("^(\\d+)_\\d+$", "\\1", dynamic_cols)),   # year part
+      as.integer(sub("^\\d+_(\\d+)$", "\\1", dynamic_cols))    # week part
+    )]
+    
+    dplyr::select(., all_of(static_cols), all_of(sorted_dynamic_cols))
+  }
+
+
+str(GPP_wide_month)
+
+# Now, calculate spatial Synchrony in the time series using the Sncf() function
+RR_df.corr_mon <- Sncf(x=GPP_wide_month$Lon,
+                   y=GPP_wide_month$Lat,
+                   z=GPP_wide_month[,4:ncol(GPP_wide_month)],
+                   resamp = 1000, 
+                   latlon = T, 
+                   na.rm=T)
+plot(RR_df.corr_mon)
+
+
+GPP_corrgram_summary.table <- summary(RR_df.corr_mon)
+
+# Plot using ggplot for export
+# create a dataframe of the predicted values
+GPP.corr.pred.df.mon <- data.frame(x = matrix(unlist(RR_df.corr_mon$real$predicted$x)),
+                                             y = matrix(unlist(RR_df.corr_mon$real$predicted$y)),
+                                time_scale = "monthly",
+                                   parameter = "GPP")
+
+## Sample average line
+Regional.synch <- GPP_corrgram_summary.table$Regional.synch
+GPP.corr.pred.df.mon$mean_synch <- round(Regional.synch,2)
+
+Regional.synch_x <-  round(GPP_corrgram_summary.table$estimates["intercepts", "cbar"], 0)
+GPP.corr.pred.df.mon$cbar <- Regional.synch_x
+
+
+GPP_corrgram_summary.table
+# ...and a dataframe of the y values for the bootstrap prediction
+GPP.corr.bootValues.df <- as.data.frame(t(RR_df.corr_mon$boot$boot.summary$predicted$y))
+
+# merge x and y values (min and max) for the bootstrap confidence intervals into a dataframe
+GPP.corr.boot.df.mon <- data.frame(x = matrix(unlist(RR_df.corr_mon$boot$boot.summary$predicted$x)),
+                                             yminGPP = GPP.corr.bootValues.df$`0.025`,
+                                             ymaxGPP = GPP.corr.bootValues.df$`0.975`,
+                                time_scale = "monthly",
+                                   parameter = "GPP")
+```
+
+
+```{r, warning=F, size = 'small', echo=F, include=T, cache=TRUE}
+
+cat(paste0(
+  "$y.intercept: ", round(GPP_corrgram_summary.table$estimates["intercepts", "y"], 2), "\n",
+  "$Regional.synch: ", round(GPP_corrgram_summary.table$Regional.synch[1], 2), "\n",  
+  "$cbar: ", round(GPP_corrgram_summary.table$estimates["intercepts", "cbar"], 0), " km\n",
+  "$x.intercept: ", round(GPP_corrgram_summary.table$quantiles["0.5", "x"], 0), " km\n"
+))
+
+```
+
+#### GPP - Quarterly synch
+
+```{r, warning=F, size = 'small', echo=F, include=F}
+#### Quarterly synch
+
+GPP_qrt <- river_metab_dat1 %>%
+  mutate(
+    month = month(date),
+    year = year(date),
+    quarter = case_when(
+      month %in% 1:3 ~ "Q1",
+      month %in% 4:6 ~ "Q2",
+      month %in% 7:9 ~ "Q3",
+      month %in% 10:12 ~ "Q4"
+    )
+  ) %>%
+  group_by(Site_ID, quarter, year, Lat, Lon) %>%
+  summarise(GPP_filled = mean(GPP_filled, na.rm = TRUE), .groups = "drop")
+
+
+GPP_wide_qrt <- GPP_qrt %>%
+ # dplyr::filter(year>2011) %>%
+  dplyr::select(Site_ID, Lon, Lat, quarter, year, GPP_filled) %>%
+  pivot_wider(names_from = c(year, quarter), values_from = GPP_filled) %>%
+  # Reorder columns: keep Site_ID, Lon, Lat first, then order year_week columns
+  {
+    static_cols <- c("Site_ID", "Lon", "Lat")
+    dynamic_cols <- setdiff(names(.), static_cols)
+    
+    # Extract year and week and sort
+    sorted_dynamic_cols <- dynamic_cols[order(
+      as.integer(sub("^(\\d+)_\\d+$", "\\1", dynamic_cols)),   # year part
+      as.integer(sub("^\\d+_(\\d+)$", "\\1", dynamic_cols))    # week part
+    )]
+    
+    dplyr::select(., all_of(static_cols), all_of(sorted_dynamic_cols))
+  }
+
+
+str(GPP_wide_qrt)
+
+# Now, calculate spatial Synchrony in the time series using the Sncf() function
+RR_df.corr_qrt <- Sncf(x=GPP_wide_qrt$Lon,
+                   y=GPP_wide_qrt$Lat,
+                   z=GPP_wide_qrt[,4:ncol(GPP_wide_qrt)],
+                   resamp = 1000, 
+                   latlon = T, 
+                   na.rm=T)
+plot(RR_df.corr_qrt)
+
+GPP_corrgram_summary.table <- summary(RR_df.corr_qrt)
+
+# Plot using ggplot for export
+# create a dataframe of the predicted values
+GPP.corr.pred.df.qrtly <- data.frame(x = matrix(unlist(RR_df.corr_qrt$real$predicted$x)),
+                                             y = matrix(unlist(RR_df.corr_qrt$real$predicted$y)),
+                                time_scale = "quarterly",   
+                                parameter = "GPP")
+
+## Sample average line
+Regional.synch <- GPP_corrgram_summary.table$Regional.synch
+GPP.corr.pred.df.qrtly$mean_synch <- round(Regional.synch,2)
+
+Regional.synch_x <-  round(GPP_corrgram_summary.table$estimates["intercepts", "cbar"], 0)
+GPP.corr.pred.df.qrtly$cbar <- Regional.synch_x
+
+
+GPP_corrgram_summary.table
+# ...and a dataframe of the y values for the bootstrap prediction
+GPP.corr.bootValues.df <- as.data.frame(t(RR_df.corr_qrt$boot$boot.summary$predicted$y))
+
+# merge x and y values (min and max) for the bootstrap confidence intervals into a dataframe
+GPP.corr.boot.df.qrtly <- data.frame(x = matrix(unlist(RR_df.corr_qrt$boot$boot.summary$predicted$x)),
+                                             yminGPP = GPP.corr.bootValues.df$`0.025`,
+                                             ymaxGPP = GPP.corr.bootValues.df$`0.975`,
+                               time_scale = "quarterly",    
+                               parameter = "GPP")
+
+
+```
+
+
+```{r, warning=F, size = 'small', echo=F, include=T, cache=TRUE}
+
+cat(paste0(
+  "$y.intercept: ", round(GPP_corrgram_summary.table$estimates["intercepts", "y"], 2), "\n",
+  "$Regional.synch: ", round(GPP_corrgram_summary.table$Regional.synch[1], 2), "\n",  
+  "$cbar: ", round(GPP_corrgram_summary.table$estimates["intercepts", "cbar"], 0), " km\n",
+  "$x.intercept: ", round(GPP_corrgram_summary.table$quantiles["0.5", "x"], 0), " km\n"
+))
+
+```
+
+#### GPP - Yearly synchrony
+
+```{r, warning=F, size = 'small', echo=F, include=F, cache=TRUE}
+
+GPP_yr <- river_metab_dat1 %>%
+  mutate(
+    year = year(date)) %>%
+  group_by(Site_ID, year, Lat, Lon) %>%
+  summarise(GPP_filled = mean(GPP_filled, na.rm = TRUE), .groups = "drop")
+
+
+GPP_wide_yr <- GPP_yr %>%
+  dplyr::select(Site_ID,Lon, Lat, year, GPP_filled) %>%
+  pivot_wider(names_from = c(year), values_from = GPP_filled)
+
+# Now, calculate spatial Synchrony in the time series using the Sncf() function
+RR_df.corr_yr <- Sncf(x=GPP_wide_yr$Lon,
+                   y=GPP_wide_yr$Lat,
+                   z=GPP_wide_yr[,4:ncol(GPP_wide_yr)],
+                   resamp = 1000, 
+                   latlon = T, 
+                   na.rm=T)
+plot(RR_df.corr_yr)
+
+GPP_corrgram_summary.table <- summary(RR_df.corr_yr)
+GPP_corrgram_summary.table
+# Plot using ggplot for export
+# create a dataframe of the predicted values
+GPP.corr.pred.df.yr <- data.frame(x = matrix(unlist(RR_df.corr_yr$real$predicted$x)),
+                                             y = matrix(unlist(RR_df.corr_yr$real$predicted$y)),
+                               time_scale = "yearly",
+                                  parameter = "GPP")
+
+## Sample average line
+Regional.synch <- GPP_corrgram_summary.table$Regional.synch
+GPP.corr.pred.df.yr$mean_synch <- round(Regional.synch,2)
+
+Regional.synch_x <-  round(GPP_corrgram_summary.table$estimates["intercepts", "cbar"], 0)
+GPP.corr.pred.df.yr$cbar <- Regional.synch_x
+
+
+# ...and a dataframe of the y values for the bootstrap prediction
+GPP.corr.bootValues.df <- as.data.frame(t(RR_df.corr_yr$boot$boot.summary$predicted$y))
+
+# merge x and y values (min and max) for the bootstrap confidence intervals into a dataframe
+GPP.corr.boot.df.yr <- data.frame(x = matrix(unlist(RR_df.corr_yr$boot$boot.summary$predicted$x)),
+                                             yminGPP = GPP.corr.bootValues.df$`0.025`,
+                                             ymaxGPP = GPP.corr.bootValues.df$`0.975`,
+                                  time_scale = "yearly",
+                                     parameter = "GPP")
+
+```
+
+
+```{r, warning=F, size = 'small', echo=F, include=T, cache=TRUE}
+
+cat(paste0(
+  "$y.intercept: ", round(GPP_corrgram_summary.table$estimates["intercepts", "y"], 2), "\n",
+  "$Regional.synch: ", round(GPP_corrgram_summary.table$Regional.synch[1], 2), "\n",  
+  "$cbar: ", round(GPP_corrgram_summary.table$estimates["intercepts", "cbar"], 0), " km\n",
+  "$x.intercept: ", round(GPP_corrgram_summary.table$quantiles["0.5", "x"], 0), " km\n"
+))
+
+```
+
+
+```{r, echo=FALSE, include=F, warning=FALSE, fig.width=12, fig.height=8}
+##### combined synchonry df 
+pred_df_all <- bind_rows(GPP.corr.pred.df.day, GPP.corr.pred.df.wk, GPP.corr.pred.df.mon, GPP.corr.pred.df.qrtly, GPP.corr.pred.df.yr)
+ci_df_all   <- bind_rows(GPP.corr.boot.df.day, GPP.corr.boot.df.wk, GPP.corr.boot.df.mon, GPP.corr.boot.df.qrtly, GPP.corr.boot.df.yr)
+
+```
+
+###### Calculate the percent difference in synchrony between time scales from daily
+
+```{r, echo=F, include=T, warning=FALSE, fig.width=12, fig.height=8}
+
+# Spread the data so each time_scale becomes a column
+pred_wide <- pred_df_all %>%
+  dplyr::select(x, y, time_scale) %>%
+  pivot_wider(names_from = time_scale, values_from = y)
+
+# Calculate percent differences from daily for each other time scale
+# Formula: ((other - daily) / daily) * 100
+pred_diff <- pred_wide %>%
+  mutate(
+    weekly_diff = (abs(weekly - daily) / daily) * 100,
+    monthly_diff = (abs(monthly - daily) / daily) * 100,
+    quarterly_diff = (abs(quarterly - daily) / daily) * 100,
+    yearly_diff = (abs(yearly - daily) / daily) * 100
+  )
+
+pred_diff
+```
+
+```{r, echo=FALSE, include=F, warning=FALSE, fig.width=6, fig.height=3}
+# Set a color-blind friendly palette
+scale_colors <- c(
+  "daily" = "#E69F00",     
+  "quarterly" = "#56B4E9",    
+  "monthly" = "#009E73",   
+  "weekly" = "#F0E442", 
+  "yearly" = "#0072B2"    
+)
+```
+
+###### Precent difference in GPP snych signal from daily 
+
+```{r, echo=FALSE, include=F, warning=FALSE, fig.width=6, fig.height=3}
+# Pivot longer
+pred_long_diff <- pred_diff %>%
+  dplyr::select(x, ends_with("_diff")) %>%
+  pivot_longer(
+    cols = ends_with("_diff"),
+    names_to = "time_scale",
+    values_to = "percent_diff"
+  ) %>%
+  mutate(
+    time_scale = gsub("_diff", "", time_scale)
+  )
+
+# Plot histogram
+ggplot(pred_long_diff, aes(x = percent_diff, fill = time_scale)) +
+  geom_density(position = "identity", alpha = 0.6, bins = 30) +
+  scale_fill_manual(values = scale_colors) +
+  labs(
+    title = "Percent Difference from Daily by Time Scale",
+    x = "Percent Difference from Daily (%)",
+    y = "Count",
+    fill = "Time Scale"
+  ) +
+  theme_minimal()
+
+```
+
+
+###### GPP: Look when synchrony dips below the sample average/ regional synch value for each timescale:
+
+This distances stream GPP is no longer regionally synchronous
+
+```{r, warning=F, size = 'small', echo=T, include=T}
+
+intersection_df <- pred_df_all %>%
+  group_by(time_scale) %>%
+  summarise(
+    y= mean(mean_synch),
+    x = mean(cbar))
+
+intersection_df
+```
+
+### Figure 2 (a): Spline Correlogram of GPP at different timescales
+
+Points represent sites with metabolism data 
+
+```{r, echo=FALSE, include=T, warning=FALSE, fig.width=8, fig.height=6}
+library(grid)
+library(ggplot2)
+library(patchwork)
+
+### add point for mean GPP to plot 
+library(geosphere)
+# Get site centroids
+site_coords <- GPP_long %>%
+  group_by(Site_ID) %>%
+  summarise(Lat = mean(Lat), Lon = mean(Lon), .groups = "drop")
+
+# Choose a reference site (the first one in the dataset)
+ref_site <- site_coords[1, ]
+
+# Compute distance in km from reference site
+site_coords <- site_coords %>%
+  mutate(distance_km = distHaversine(matrix(c(Lon, Lat), ncol = 2),
+                                     matrix(c(ref_site$Lon, ref_site$Lat), ncol = 2)) / 1000)
+
+GPP_long_dist <- GPP_long %>%
+  left_join(site_coords %>% dplyr::select(Site_ID, distance_km), by = "Site_ID")
+
+
+GPP_long_dist_plt <- GPP_long_dist %>%
+  mutate(GPP_P = ifelse(!is.na(GPP_filled), -0.2, 0)) %>%
+  group_by(Site_ID, distance_km, GPP_P) %>%
+  summarise(
+    GPP_mean = median(GPP_filled, na.rm = TRUE), 
+    GPP_low = quantile(GPP_filled, probs = 0.25, na.rm = TRUE), 
+    GPP_up = quantile(GPP_filled, probs = 0.75, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+###
+GPP_synch_spline <- ggplot() +
+  # Ribbon for CI
+  geom_ribbon(data = ci_df_all%>%dplyr::filter(x<3150),
+              aes(x = x, ymin = yminGPP, ymax = ymaxGPP, fill = time_scale),
+              alpha = 0.1) +
+  # Main spline lines
+  geom_line(data = pred_df_all%>%dplyr::filter(x<3150),
+            aes(x = x, y = y, color = time_scale),
+            size = 1) +
+  geom_segment(data = intersection_df,
+               aes(x = 0, xend = x, 
+                   y = y, yend = y,
+                   color = time_scale),
+               linetype = "dashed") +
+  # Draw vertical segments from bottom to y_intersect
+  geom_segment(data = intersection_df,
+               aes(x = x, xend = x, 
+                   y = -0.2, yend = y,
+                   color = time_scale),
+               linetype = "dashed") +
+  geom_vline(xintercept = twothirds_dist_km, color="grey40") +
+  # Add GPP points (mean)
+  geom_point(data = GPP_long_dist_plt,
+             aes(x = distance_km, y = GPP_P),
+             shape = 4, size = 2,
+             alpha=0.5) +
+    ylim(-0.2, 0.75) +
+  # Labels and theme
+  labs(title = "Synchrony in GPP across different time scales",
+       y = "Correlation",
+       x = "Distance (km)",
+       fill = "Time Scale",
+       color = "Time Scale") +
+  scale_color_manual(values = scale_colors) +
+  scale_fill_manual(values = scale_colors) +
+  theme_classic() +
+  theme(legend.position = "bottom")
+
+# Rotated density plot (marginal plot for y-axis)
+density_plot_y <- ggplot(pred_long_diff%>%dplyr::filter(x<3150), aes(x = percent_diff, fill = time_scale)) +
+  geom_density(position = "identity", alpha = 0.6) +
+  coord_flip() +  # Rotate 90 degrees
+  scale_fill_manual(values = scale_colors) +
+  labs(
+    x = "Percent difference from daily synchrony",
+    y = "Density") +
+  theme_classic() +
+theme(
+  axis.title.x = element_blank(),
+  axis.text.x = element_blank(),
+  axis.ticks.x = element_blank(),
+  plot.margin = ggplot2::margin(5, 5, 5, 5, unit = "pt"),
+legend.position = "none"
+)
+
+
+# Combine using patchwork (put rotated density plot on the right)
+combined_plot <- GPP_synch_spline + density_plot_y +
+  plot_layout(ncol = 2, widths = c(3, 1))
+combined_plot
+```
+
+```{r, warning=F, size = 'small', echo=F, include=FALSE}
+# ggsave("/Users/kellyloria/Documents/River_Recovery_Dynamics_Analysis/figures/GPP_spline_correlogram.png", plot = combined_plot, width =6.5, height = 4.25, units = "in")
+
+```
+
+
+###### Rate of GPP synchrony decay with distance:
+
+Where b parameter represents the decay rate: higher b = faster loss of
+synchrony with distance.
+
+```{r, warning=F, size = 'small', echo=F, include=T}
+
+fit_models <- pred_df_all %>%
+  group_by(time_scale) %>%
+    filter(x<cbar) %>%
+  nest() %>%
+  mutate(model = map(data, ~ nls(y ~ a * exp(-b * x), data = ., start = list(a = 1, b = 0.001))),
+         params = map(model, tidy)) %>%
+  unnest(params) %>%
+  mutate(across(c(estimate, std.error, statistic, p.value), ~ round(.x, 5), .names = "rounded_{.col}"))
+
+fit_models_tab <- as.data.frame(fit_models)%>%
+  dplyr::select(time_scale, term,rounded_estimate: rounded_p.value)
+
+fit_models_tab
+
+
+```
+
+### B. ER synchrony at differnt timescales:
+
+#### ER - Daily synchrony:
+
+```{r, echo=FALSE, include=F, warning=FALSE, fig.width=12, fig.height=8, cache=TRUE}
+ER_long <- river_metab_dat1 %>%
+  group_by(Site_ID, date, Lat, Lon) %>%
+  summarise(ER_filled = mean(ER_filled, na.rm = TRUE), .groups = "drop")
+
+ER_wide_day <- ER_long %>%
+  pivot_wider(
+    names_from = date,
+    values_from = ER_filled)
+
+# Now, calculate spatial Synchrony in the time series using the Sncf() function
+ER_df.corr_day <- Sncf(x=ER_wide_day$Lon,
+                   y=ER_wide_day$Lat,
+                   z=ER_wide_day[,4:ncol(ER_wide_day)],
+                   resamp = 1000, 
+                   latlon = T,
+                   na.rm = T)
+
+
+plot(ER_df.corr_day)
+
+
+ER_corrgram_summary.table <- summary(ER_df.corr_day)
+
+# Plot using ggplot for export
+# create a dataframe of the predicted values
+ER.corr.pred.df.day <- data.frame(x = matrix(unlist(ER_df.corr_day$real$predicted$x)),
+                                             y = matrix(unlist(ER_df.corr_day$real$predicted$y)),
+                               time_scale = "daily",
+                                  parameter = "ER")
+
+
+## Sample average line
+Regional.synch <- ER_corrgram_summary.table$Regional.synch
+ER.corr.pred.df.day$mean_synch <- round(Regional.synch,2)
+
+Regional.synch_x <-  round(ER_corrgram_summary.table$estimates["intercepts", "cbar"], 0)
+ER.corr.pred.df.day$cbar <- Regional.synch_x
+
+# ...and a dataframe of the y values for the bootstrap prediction
+ER.corr.bootValues.df <- as.data.frame(t(ER_df.corr_day$boot$boot.summary$predicted$y))
+
+# merge x and y values (min and max) for the bootstrap confidence intervals into a dataframe
+ER.corr.boot.df.day <- data.frame(x = matrix(unlist(ER_df.corr_day$boot$boot.summary$predicted$x)),
+                                             yminER = ER.corr.bootValues.df$`0.025`,
+                                             ymaxER = ER.corr.bootValues.df$`0.975`,
+                               time_scale = "daily",     
+                               parameter = "ER")
+
+
+```
+
+
+```{r, warning=F, size = 'small', echo=F, include=T, cache=TRUE}
+
+cat(paste0(
+  "$y.intercept: ", round(ER_corrgram_summary.table$estimates["intercepts", "y"], 2), "\n",
+  "$Regional.synch: ", round(ER_corrgram_summary.table$Regional.synch[1], 2), "\n",  
+  "$cbar: ", round(ER_corrgram_summary.table$estimates["intercepts", "cbar"], 0), " km\n",
+  "$x.intercept: ", round(ER_corrgram_summary.table$quantiles["0.5", "x"], 0), " km\n"
+))
+
+```
+
+#### ER - Weekly synchrony
+
+```{r, echo=FALSE, include=F, warning=FALSE, fig.width=12, fig.height=8, cache=TRUE}
+ER_week <-  river_metab_dat1 %>%
+  mutate(week=week(date))%>%
+  group_by(Site_ID, week, year, Lat, Lon) %>%
+  summarise(ER_filled = mean(ER_filled, na.rm=T))
+
+ER_wide_week <- ER_week %>%
+  dplyr::select(Site_ID,Lon, Lat, week, year, ER_filled) %>%
+  pivot_wider(names_from = c(year, week), values_from = ER_filled)
+
+river_metab_dat<- as.data.frame(river_metab_dat)
+
+ER_wide_week <- ER_week %>%
+ # dplyr::filter(year>2011) %>%
+ dplyr::select(Site_ID, Lon, Lat, week, year, ER_filled) %>%
+  pivot_wider(names_from = c(year, week), values_from = ER_filled) %>%
+  # Reorder columns: keep Site_ID, Lon, Lat first, then order year_week columns
+  {
+    static_cols <- c("Site_ID", "Lon", "Lat")
+    dynamic_cols <- setdiff(names(.), static_cols)
+    
+    # Extract year and week and sort
+    sorted_dynamic_cols <- dynamic_cols[order(
+      as.integer(sub("^(\\d+)_\\d+$", "\\1", dynamic_cols)),   # year part
+      as.integer(sub("^\\d+_(\\d+)$", "\\1", dynamic_cols))    # week part
+    )]
+    
+    dplyr::select(., all_of(static_cols), all_of(sorted_dynamic_cols))
+  }
+
+
+# Now, calculate spatial Synchrony in the time series using the Sncf() function
+RR_df.corr_wk <- Sncf(x=ER_wide_week$Lon,
+                   y=ER_wide_week$Lat,
+                   z=ER_wide_week[,4:ncol(ER_wide_week)],
+                   resamp = 1000, 
+                   latlon = T,
+                   na.rm=T)
+
+
+plot(RR_df.corr_wk)
+
+
+ER_corrgram_summary.table <- summary(RR_df.corr_wk)
+# Plot using ggplot for export
+# create a dataframe of the predicted values
+ER.corr.pred.df.wk <- data.frame(x = matrix(unlist(RR_df.corr_wk$real$predicted$x)),
+                                             y = matrix(unlist(RR_df.corr_wk$real$predicted$y)),
+                                     time_scale = "weekly",     
+                                 parameter = "ER")
+## Sample average line
+Regional.synch <- ER_corrgram_summary.table$Regional.synch
+ER.corr.pred.df.wk$mean_synch <- round(Regional.synch,2)
+
+Regional.synch_x <-  round(ER_corrgram_summary.table$estimates["intercepts", "cbar"], 0)
+ER.corr.pred.df.wk$cbar <- Regional.synch_x
+
+# ...and a dataframe of the y values for the bootstrap prediction
+ER.corr.bootValues.df <- as.data.frame(t(RR_df.corr_wk$boot$boot.summary$predicted$y))
+
+# merge x and y values (min and max) for the bootstrap confidence intervals into a dataframe
+ER.corr.boot.df.wk <- data.frame(x = matrix(unlist(RR_df.corr_wk$boot$boot.summary$predicted$x)),
+                                             yminER = ER.corr.bootValues.df$`0.025`,
+                                             ymaxER = ER.corr.bootValues.df$`0.975`,
+                                     time_scale = "weekly",
+                                     parameter = "ER")
+```
+
+
+```{r, warning=F, size = 'small', echo=F, include=T, cache=TRUE}
+
+cat(paste0(
+  "$y.intercept: ", round(ER_corrgram_summary.table$estimates["intercepts", "y"], 2), "\n",
+  "$Regional.synch: ", round(ER_corrgram_summary.table$Regional.synch[1], 2), "\n",  
+  "$cbar: ", round(ER_corrgram_summary.table$estimates["intercepts", "cbar"], 0), " km\n",
+  "$x.intercept: ", round(ER_corrgram_summary.table$quantiles["0.5", "x"], 0), " km\n"
+))
+
+```
+
+#### ER - Monthly synchrony
+
+```{r, echo=FALSE, include=F, warning=FALSE, fig.width=12, fig.height=8, cache=TRUE}
+
+ER_month <-  river_metab_dat1 %>%
+  mutate(month=month(date))%>%
+  group_by(Site_ID, month, year, Lat, Lon) %>%
+  summarise(ER_filled = mean(ER_filled, na.rm=T))
+
+river_metab_dat<- as.data.frame(river_metab_dat)
+
+ER_wide_month <- ER_month %>%
+ # dplyr::filter(year>2011) %>%
+  dplyr::select(Site_ID, Lon, Lat, month, year, ER_filled) %>%
+  pivot_wider(names_from = c(year, month), values_from = ER_filled) %>%
+  # Reorder columns: keep Site_ID, Lon, Lat first, then order year_week columns
+  {
+    static_cols <- c("Site_ID", "Lon", "Lat")
+    dynamic_cols <- setdiff(names(.), static_cols)
+    
+    # Extract year and week and sort
+    sorted_dynamic_cols <- dynamic_cols[order(
+      as.integer(sub("^(\\d+)_\\d+$", "\\1", dynamic_cols)),   # year part
+      as.integer(sub("^\\d+_(\\d+)$", "\\1", dynamic_cols))    # week part
+    )]
+    
+    dplyr::select(., all_of(static_cols), all_of(sorted_dynamic_cols))
+  }
+
+
+str(ER_wide_month)
+
+# Now, calculate spatial Synchrony in the time series using the Sncf() function
+RR_df.corr_mon <- Sncf(x=ER_wide_month$Lon,
+                   y=ER_wide_month$Lat,
+                   z=ER_wide_month[,4:ncol(ER_wide_month)],
+                   resamp = 1000, 
+                   latlon = T, 
+                   na.rm=T)
+plot(RR_df.corr_mon)
+
+
+ER_corrgram_summary.table <- summary(RR_df.corr_mon)
+
+# Plot using ggplot for export
+# create a dataframe of the predicted values
+ER.corr.pred.df.mon <- data.frame(x = matrix(unlist(RR_df.corr_mon$real$predicted$x)),
+                                             y = matrix(unlist(RR_df.corr_mon$real$predicted$y)),
+                                time_scale = "monthly",
+                                    parameter = "ER")
+
+## Sample average line
+Regional.synch <- ER_corrgram_summary.table$Regional.synch
+ER.corr.pred.df.mon$mean_synch <- round(Regional.synch,2)
+
+Regional.synch_x <-  round(ER_corrgram_summary.table$estimates["intercepts", "cbar"], 0)
+ER.corr.pred.df.mon$cbar <- Regional.synch_x
+
+# ...and a dataframe of the y values for the bootstrap prediction
+ER.corr.bootValues.df <- as.data.frame(t(RR_df.corr_mon$boot$boot.summary$predicted$y))
+
+# merge x and y values (min and max) for the bootstrap confidence intervals into a dataframe
+ER.corr.boot.df.mon <- data.frame(x = matrix(unlist(RR_df.corr_mon$boot$boot.summary$predicted$x)),
+                                             yminER = ER.corr.bootValues.df$`0.025`,
+                                             ymaxER = ER.corr.bootValues.df$`0.975`,
+                                time_scale = "monthly",
+                                    parameter = "ER")
+```
+
+
+```{r, warning=F, size = 'small', echo=F, include=T, cache=TRUE}
+cat(paste0(
+  "$y.intercept: ", round(ER_corrgram_summary.table$estimates["intercepts", "y"], 2), "\n",
+  "$Regional.synch: ", round(ER_corrgram_summary.table$Regional.synch[1], 2), "\n",  
+  "$cbar: ", round(ER_corrgram_summary.table$estimates["intercepts", "cbar"], 0), " km\n",
+  "$x.intercept: ", round(ER_corrgram_summary.table$quantiles["0.5", "x"], 0), " km\n"
+))
+```
+
+#### ER - Quarterly synchrony
+
+```{r, echo=FALSE, include=F, warning=FALSE, fig.width=12, fig.height=8, cache=TRUE}
+
+ER_qrt <- river_metab_dat1 %>%
+  mutate(
+    month = month(date),
+    year = year(date),
+    quarter = case_when(
+      month %in% 1:3 ~ "Q1",
+      month %in% 4:6 ~ "Q2",
+      month %in% 7:9 ~ "Q3",
+      month %in% 10:12 ~ "Q4"
+    )
+  ) %>%
+  group_by(Site_ID, quarter, year, Lat, Lon) %>%
+  summarise(ER_filled = mean(ER_filled, na.rm = TRUE), .groups = "drop")
+
+
+river_metab_dat<- as.data.frame(river_metab_dat)
+
+ER_wide_qrt <- ER_qrt %>%
+ # dplyr::filter(year>2011) %>%
+  dplyr::select(Site_ID, Lon, Lat, quarter, year, ER_filled) %>%
+  pivot_wider(names_from = c(year, quarter), values_from = ER_filled) %>%
+  # Reorder columns: keep Site_ID, Lon, Lat first, then order year_week columns
+  {
+    static_cols <- c("Site_ID", "Lon", "Lat")
+    dynamic_cols <- setdiff(names(.), static_cols)
+    
+    # Extract year and week and sort
+    sorted_dynamic_cols <- dynamic_cols[order(
+      as.integer(sub("^(\\d+)_\\d+$", "\\1", dynamic_cols)),   # year part
+      as.integer(sub("^\\d+_(\\d+)$", "\\1", dynamic_cols))    # week part
+    )]
+    
+    dplyr::select(., all_of(static_cols), all_of(sorted_dynamic_cols))
+  }
+
+
+str(ER_wide_qrt)
+
+# Now, calculate spatial Synchrony in the time series using the Sncf() function
+RR_df.corr_qrt <- Sncf(x=ER_wide_qrt$Lon,
+                   y=ER_wide_qrt$Lat,
+                   z=ER_wide_qrt[,4:ncol(ER_wide_qrt)],
+                   resamp = 1000, 
+                   latlon = T, 
+                   na.rm=T)
+plot(RR_df.corr_qrt)
+
+
+ER_corrgram_summary.table <- summary(RR_df.corr_qrt)
+
+# Plot using ggplot for export
+# create a dataframe of the predicted values
+ER.corr.pred.df.qrtly <- data.frame(x = matrix(unlist(RR_df.corr_qrt$real$predicted$x)),
+                                             y = matrix(unlist(RR_df.corr_qrt$real$predicted$y)),
+                                time_scale = "quarterly",     
+                                parameter = "ER")
+
+## Sample average line
+Regional.synch <- ER_corrgram_summary.table$Regional.synch
+ER.corr.pred.df.qrtly$mean_synch <- round(Regional.synch,2)
+
+Regional.synch_x <-  round(ER_corrgram_summary.table$estimates["intercepts", "cbar"], 0)
+ER.corr.pred.df.qrtly$cbar <- Regional.synch_x
+
+
+# ...and a dataframe of the y values for the bootstrap prediction
+ER.corr.bootValues.df <- as.data.frame(t(RR_df.corr_qrt$boot$boot.summary$predicted$y))
+
+# merge x and y values (min and max) for the bootstrap confidence intervals into a dataframe
+ER.corr.boot.df.qrtly <- data.frame(x = matrix(unlist(RR_df.corr_qrt$boot$boot.summary$predicted$x)),
+                                             yminER = ER.corr.bootValues.df$`0.025`,
+                                             ymaxER = ER.corr.bootValues.df$`0.975`,
+                               time_scale = "quarterly",     
+                               parameter = "ER")
+```
+
+```{r, warning=F, size = 'small', echo=F, include=T, cache=TRUE}
+cat(paste0(
+  "$y.intercept: ", round(ER_corrgram_summary.table$estimates["intercepts", "y"], 2), "\n",
+  "$Regional.synch: ", round(ER_corrgram_summary.table$Regional.synch[1], 2), "\n",  
+  "$cbar: ", round(ER_corrgram_summary.table$estimates["intercepts", "cbar"], 0), " km\n",
+  "$x.intercept: ", round(ER_corrgram_summary.table$quantiles["0.5", "x"], 0), " km\n"
+))
+```
+
+#### ER - Yearly synchrony
+
+```{r, echo=FALSE, include=F, warning=FALSE, fig.width=12, fig.height=8, cache=TRUE}
+
+#### Yearly synchrony
+ER_yr <- river_metab_dat1 %>%
+  mutate(
+    year = year(date)) %>%
+  group_by(Site_ID, year, Lat, Lon) %>%
+  summarise(ER_filled = mean(ER_filled, na.rm = TRUE), .groups = "drop")
+
+
+ER_wide_yr <- ER_yr %>%
+  dplyr::select(Site_ID,Lon, Lat, year, ER_filled) %>%
+  pivot_wider(names_from = c(year), values_from = ER_filled)
+
+
+# Now, calculate spatial Synchrony in the time series using the Sncf() function
+RR_df.corr_yr <- Sncf(x=ER_wide_yr$Lon,
+                   y=ER_wide_yr$Lat,
+                   z=ER_wide_yr[,4:ncol(ER_wide_yr)],
+                   resamp = 1000, 
+                   latlon = T, 
+                   na.rm=T)
+plot(RR_df.corr_yr)
+
+ER_corrgram_summary.table <- summary(RR_df.corr_yr)
+
+# create a dataframe of the predicted values
+ER.corr.pred.df.yr <- data.frame(x = matrix(unlist(RR_df.corr_yr$real$predicted$x)),
+                                             y = matrix(unlist(RR_df.corr_yr$real$predicted$y)),
+                               time_scale = "yearly",
+                                   parameter = "ER")
+
+## Sample average line
+Regional.synch <- ER_corrgram_summary.table$Regional.synch
+ER.corr.pred.df.yr$mean_synch <- round(Regional.synch,2)
+
+Regional.synch_x <-  round(ER_corrgram_summary.table$estimates["intercepts", "cbar"], 0)
+ER.corr.pred.df.yr$cbar <- Regional.synch_x
+
+# ...and a dataframe of the y values for the bootstrap prediction
+ER.corr.bootValues.df <- as.data.frame(t(RR_df.corr_yr$boot$boot.summary$predicted$y))
+
+# merge x and y values (min and max) for the bootstrap confidence intervals into a dataframe
+ER.corr.boot.df.yr <- data.frame(x = matrix(unlist(RR_df.corr_yr$boot$boot.summary$predicted$x)),
+                                             yminER = ER.corr.bootValues.df$`0.025`,
+                                             ymaxER = ER.corr.bootValues.df$`0.975`,
+                                  time_scale = "yearly",    
+                                 parameter = "ER")
+
+```
+
+```{r, warning=F, size = 'small', echo=F, include=T, cache=TRUE}
+cat(paste0(
+  "$y.intercept: ", round(ER_corrgram_summary.table$estimates["intercepts", "y"], 2), "\n",
+  "$Regional.synch: ", round(ER_corrgram_summary.table$Regional.synch[1], 2), "\n",  
+  "$cbar: ", round(ER_corrgram_summary.table$estimates["intercepts", "cbar"], 0), " km\n",
+  "$x.intercept: ", round(ER_corrgram_summary.table$quantiles["0.5", "x"], 0), " km\n"
+))
+```
+
+```{r, echo=FALSE, include=F, warning=FALSE, fig.width=12, fig.height=8}
+##### combined synch 
+
+pred_df_all_ER <- bind_rows(ER.corr.pred.df.day, ER.corr.pred.df.wk, ER.corr.pred.df.mon, ER.corr.pred.df.qrtly, ER.corr.pred.df.yr)
+ci_df_all_ER   <- bind_rows(ER.corr.boot.df.day, ER.corr.boot.df.wk, ER.corr.boot.df.mon, ER.corr.boot.df.qrtly, ER.corr.boot.df.yr)
+
+```
+
+###### ER: Look when synchrony dips below the sample average/ regional synch value for each timescale:
+
+This distances stream ER is no longer regionally synchronous
+
+```{r, warning=F, size = 'small', echo=T, include=T}
+
+intersection_df <- pred_df_all_ER %>%
+  group_by(time_scale) %>%
+  summarise(
+    y= mean(mean_synch),
+    x = mean(cbar))
+
+intersection_df
+```
+
+
+###### Rate of ER synchrony decay with distance:
+
+Where b parameter represents the decay rate: higher b = faster loss of
+synchrony with distance.
+
+```{r, warning=F, size = 'small', echo=F, include=T}
+library(dplyr)
+library(purrr)
+library(broom)
+
+
+cbar_df <- pred_df_all_ER %>%
+  group_by(time_scale) %>%
+  summarise(cbar = unique(cbar))  # or max, mean, etc. depending on your case
+
+fit_models <- pred_df_all_ER %>%
+  group_by(time_scale) %>%
+  filter(x<cbar) %>%
+  nest() %>%
+  mutate(model = map(data, ~ nls(y ~ a * exp(-b * x), data = ., start = list(a = 1, b = 0.001))),
+         params = map(model, tidy)) %>%
+  unnest(params) %>%
+  mutate(across(c(estimate, std.error, statistic, p.value), ~ round(.x, 5), .names = "rounded_{.col}"))
+
+fit_models_tab <- as.data.frame(fit_models)%>%
+  dplyr::select(time_scale, term,rounded_estimate: rounded_p.value)
+
+fit_models_tab
+
+
+```
+
+```{r, size='large', echo=FALSE, include=F, warning=FALSE, fig.width=12, fig.height=8}
+
+ggplot() +
+  geom_ribbon(data = ci_df_all_ER,
+              aes(x = x, ymin = yminER, ymax = ymaxER, fill = time_scale),
+              alpha = 0.1) +
+  geom_line(data = pred_df_all_ER,
+            aes(x = x, y = y, color = time_scale),
+            size = 1) +
+  ##
+    labs(title = "Synchrony in ER across different time scales", 
+       y= "Correlation", 
+       x="Distance (km)") +
+  scale_color_manual(values = scale_colors) +
+  scale_fill_manual(values = scale_colors) +
+  theme_classic()
+
+
+```
+
+```{r, echo=FALSE, include=F, warning=FALSE, fig.width=6, fig.height=4}
+
+
+# Spread the data so each time_scale becomes a column
+pred_wide_ER <- pred_df_all_ER %>%
+  dplyr::select(x,y,time_scale)%>%
+  pivot_wider(names_from = time_scale, values_from = y)
+
+# Calculate percent differences from daily for each other time scale
+# Formula: ((other - daily) / daily) * 100
+pred_diff_ER <- pred_wide_ER %>%
+  mutate(
+    weekly_diff = (abs(weekly - daily) / daily) * 100,
+    monthly_diff = (abs(monthly - daily) / daily) * 100,
+    quarterly_diff = (abs(quarterly - daily) / daily) * 100,
+    yearly_diff = (abs(yearly - daily) / daily) * 100
+  )
+
+
+
+# Pivot longer
+pred_long_diff_ER <- pred_diff_ER %>%
+ dplyr:: select(x, ends_with("_diff")) %>%
+  pivot_longer(
+    cols = ends_with("_diff"),
+    names_to = "time_scale",
+    values_to = "percent_diff"
+  ) %>%
+  mutate(
+    time_scale = gsub("_diff", "", time_scale)
+  )
+
+
+# Plot histogram
+ggplot(pred_long_diff_ER, aes(x = percent_diff, fill = time_scale)) +
+  geom_density(position = "identity", alpha = 0.6, bins = 30) +
+  scale_fill_manual(values = scale_colors) +
+  labs(
+    title = "Percent Difference from Daily by Time Scale",
+    x = "Percent Difference from Daily (%)",
+    y = "Count",
+    fill = "Time Scale"
+  ) +
+  theme_minimal()
+
+```
+
+### Figure 2 (b): Spline Correlogram of ER at different timescales
+
+Points represent site with metabolism estimates
+
+
+```{r, echo=FALSE, include=T, warning=FALSE, fig.width=8, fig.height=6}
+library(ggplot2)
+library(patchwork)
+
+library(broom)
+### add point for mean ER to plot 
+library(geosphere)
+
+site_coords <- ER_long %>%
+  group_by(Site_ID) %>%
+  summarise(Lat = mean(Lat), Lon = mean(Lon), .groups = "drop")
+
+# Choose a reference site (e.g., the upstream-most one)
+ref_site <- site_coords[1, ]
+
+# Compute distance in km from reference site
+site_coords <- site_coords %>%
+  mutate(distance_km = distHaversine(matrix(c(Lon, Lat), ncol = 2),
+                                     matrix(c(ref_site$Lon, ref_site$Lat), ncol = 2)) / 1000)
+
+ER_long_dist <- ER_long %>%
+  left_join(site_coords %>% dplyr::select(Site_ID, distance_km), by = "Site_ID")
+
+
+
+
+ER_long_dist_plt <- ER_long_dist %>%
+  mutate(ER_P = ifelse(!is.na(ER_filled), -0.2, 0)) %>%
+  group_by(Site_ID, distance_km, ER_P) %>%
+  summarise(
+    ER_mean = median(ER_filled, na.rm = TRUE), 
+    ER_low = quantile(ER_filled, probs = 0.25, na.rm = TRUE), 
+    ER_up = quantile(ER_filled, probs = 0.75, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+
+###
+ER_synch_spline <- ggplot() +
+  # Ribbon for CI
+  geom_ribbon(data = ci_df_all_ER%>%dplyr::filter(x<3150),
+              aes(x = x, ymin = yminER, ymax = ymaxER, fill = time_scale),
+              alpha = 0.1) +
+  # Main spline lines
+  geom_line(data = pred_df_all_ER%>%dplyr::filter(x<3150),
+            aes(x = x, y = y, color = time_scale),
+            size = 1) +
+   geom_segment(data = intersection_df,
+               aes(x = 0, xend = x, 
+                   y = y, yend = y,
+                   color = time_scale),
+               linetype = "dashed") +
+  # Draw vertical segments from bottom to y_intersect
+  geom_segment(data = intersection_df,
+               aes(x = x, xend = x, 
+                   y = -0.2, yend = y,
+                   color = time_scale),
+               linetype = "dashed") +
+  # Add ER points (mean)
+  geom_point(data = ER_long_dist_plt,
+             aes(x = distance_km, y = ER_P),
+             shape = 4, size = 2,
+             alpha=0.5) +
+    geom_vline(xintercept = twothirds_dist_km, color="grey40") +
+  ylim(-0.2,0.75) +
+  # Labels and theme
+  labs(title = "Synchrony in ER across different time scales",
+       y = "Correlation",
+       x = "Distance (km)",
+       fill = "Time Scale",
+       color = "Time Scale") +
+  scale_color_manual(values = scale_colors) +
+  scale_fill_manual(values = scale_colors) +
+  theme_classic() +
+  theme(legend.position = "bottom")
+
+# Rotated density plot (marginal plot for y-axis)
+density_plot_y <- ggplot(pred_long_diff_ER%>%dplyr::filter(x<3150), aes(x = percent_diff, fill = time_scale)) +
+  geom_density(position = "identity", alpha = 0.6) +
+  coord_flip() +  # Rotate 90 degrees
+  scale_fill_manual(values = scale_colors) +
+  labs(
+    x = "Percent difference from daily synchrony",
+    y = "Density") +
+  theme_classic()+
+  theme(axis.title.x = element_blank(),
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+                plot.margin = ggplot2::margin(5, 5, 5, 5, unit = "pt"),,
+        legend.position="none")
+
+# Combine using patchwork (put rotated density plot on the right)
+combined_plot <- ER_synch_spline + density_plot_y +
+  plot_layout(ncol = 2, widths = c(3, 1))
+combined_plot
+```
+
+```{r, warning=F, size = 'small', echo=F, include=FALSE}
+# ggsave("/Users/kellyloria/Documents/River_Recovery_Dynamics_Analysis/figures/ER_spline_correlogram.png", plot = combined_plot, width =6.5, height = 4.25, units = "in")
+
+```
+
+
+## FIG 2
+
+
+```{r, warning=F, size = 'small', echo=F,include=TRUE, fig.width=7, fig.height=7}
+# Arrange plots with shared legend at the bottom
+library(ggpubr)
+
+spline_grid_combo <- ggarrange(
+GPP_synch_spline,
+ER_synch_spline,
+  ncol = 1, nrow = 2,
+  common.legend = T, 
+  legend = "bottom"
+)
+
+spline_grid_combo
+```
+
+```{r, warning=F, size = 'small', echo=F, include=FALSE}
+# ggsave("/Users/kellyloria/Documents/River_Recovery_Dynamics_Analysis/figures/Timeseiries_spline_correlogram_v2.png", plot = spline_grid_combo, width =5.5, height = 6.5, units = "in")
+
+```
+
+
+
+## Part 2 - Moran Effect
+
+-   MODIS data for leaf area index (LAI)
+
+-   Daily streamflow (Q)
+
+-   Daily water temperature (water_temp)
+
+-   Daily air temp (air_temp)
+
+-   Daily precipitation (PPT)
+
+#### Bring in MODIS data for LAI to get at
+
+```{r, echo=FALSE, include=F, warning=FALSE, fig.width=12, fig.height=8}
+# https://github.com/gpvalentine/SE_Trout/blob/main/Analysis/SE_Trout_Correlograms.R
+
+LAI_dat <-readRDS("/Users/kellyloria/Documents/River_Recovery_Dynamics_Analysis/data/Modis_data/StreamDat_MOD_combined.rds")%>%
+  mutate(date=as.Date(Date)) %>%
+    filter(Site_ID %in% sites_keep$Site_ID)
+
+
+# intersect(unique(river_metab_dat1$Site_ID), unique(LAI_dat$Site_ID))
+# 
+# 
+# Metat_sites_notinlight <- setdiff(unique(river_metab_dat1$site), unique(StreamLight_dat$site)) # Sites in metab but not in light
+# Light_sites_notinmetab<- setdiff(unique(StreamLight_dat$site), unique(river_metab_dat1$site)) # Sites in light but not in metab
+# 
+# LAI_sites_notinlight<- setdiff(unique(LAI_dat$Site_ID), unique(StreamLight_dat$Site_ID)) # Sites in light but not in metab
+
+```
+
+#### LAI Daily synch (filled)
+
+```{r, echo=FALSE, include=F, warning=FALSE, fig.width=6, fig.height=3}
+
+str(LAI_dat)
+
+stream_LAI_dat <- LAI_dat %>%
+  left_join(river_metab_dat, by = c("Site_ID", "date"))
+
+### 
+
+LAI_long <- stream_LAI_dat %>%
+  group_by(Site_ID, date, Lat, Lon) %>%
+  summarise(Lai = mean(Lai, na.rm = TRUE), .groups = "drop")
+
+
+LAI_filled_coords <- LAI_long %>%
+  group_by(Site_ID) %>%
+  fill(Lat, Lon, .direction = "downup") %>%
+  ungroup()
+
+
+LAI_filled_coords1 <- LAI_filled_coords %>%
+  group_by(Site_ID) %>%
+  fill(Lai, .direction = "downup") %>%
+  ungroup()
+
+LAI_wide_day <- LAI_filled_coords1 %>%
+  pivot_wider(
+    names_from = date,
+    values_from = Lai)
+
+LAI_wide_day<- na.omit(LAI_wide_day)
+
+# Now, calculate spatial Synchrony in the time series using the Sncf() function
+LAI_df.corr_day <- Sncf(x=LAI_wide_day$Lon,
+                   y=LAI_wide_day$Lat,
+                   z=LAI_wide_day[,4:ncol(LAI_wide_day)],
+                   resamp = 1000, 
+                   latlon = T,
+                   na.rm = T)
+
+
+plot(LAI_df.corr_day)
+
+
+LAI_corrgram_summary.table <- summary(LAI_df.corr_day)
+
+# Plot using ggplot for export
+# create a dataframe of the predicted values
+LAI.corr.pred.df.day <- data.frame(x = matrix(unlist(LAI_df.corr_day$real$predicted$x)),
+                                             y = matrix(unlist(LAI_df.corr_day$real$predicted$y)),
+                               time_scale = "daily",
+                               parameter="LAI")
+
+## Sample average line
+Regional.synch <- LAI_corrgram_summary.table$Regional.synch
+LAI.corr.pred.df.day$mean_synch <- round(Regional.synch,2)
+
+Regional.synch_x <-  round(LAI_corrgram_summary.table$estimates["intercepts", "cbar"], 0)
+LAI.corr.pred.df.day$cbar <- Regional.synch_x
+
+
+# ...and a dataframe of the y values for the bootstrap prediction
+LAI.corr.bootValues.df <- as.data.frame(t(LAI_df.corr_day$boot$boot.summary$predicted$y))
+
+# merge x and y values (min and max) for the bootstrap confidence intervals into a dataframe
+LAI.corr.boot.df.day <- data.frame(x = matrix(unlist(LAI_df.corr_day$boot$boot.summary$predicted$x)),
+                                             yminLAI = LAI.corr.bootValues.df$`0.025`,
+                                             ymaxLAI = LAI.corr.bootValues.df$`0.975`,
+                               time_scale = "daily",
+                                parameter="LAI")
+
+```
+
+```{r, warning=F, size = 'small', echo=F, include=T, cache=TRUE}
+cat(paste0(
+  "$y.intercept: ", round(LAI_corrgram_summary.table$estimates["intercepts", "y"], 2), "\n",
+  "$Regional.synch: ", round(LAI_corrgram_summary.table$Regional.synch[1], 2), "\n",  
+  "$cbar: ", round(LAI_corrgram_summary.table$estimates["intercepts", "cbar"], 0), " km\n",
+  "$x.intercept: ", round(LAI_corrgram_summary.table$quantiles["0.5", "x"], 0), " km\n"
+))
+```
+
+#### Daily flow:
+
+```{r, size='small', echo=F, include=T, warning=FALSE}
+# choosing max flow:
+RR_dat_TS_Q <- river_metab_dat1 %>%
+  dplyr::select(Site_ID,Lon, Lat, date, discharge) %>%
+  pivot_wider(names_from = c(date), values_from = discharge)
+
+# Now, calculate spatial Synchrony in the time series using the Sncf() function
+Q_RR_df.corr <- Sncf(x=RR_dat_TS_Q$Lon,
+                   y=RR_dat_TS_Q$Lat,
+                   z=RR_dat_TS_Q[,4:ncol(RR_dat_TS_Q)],
+                   resamp = 1000,
+                   latlon = T,
+                     na.rm = T)
+
+plot(Q_RR_df.corr)
+
+Q_corrgram_summary.table <- summary(Q_RR_df.corr)
+
+# Plot using ggplot for export
+# create a dataframe of the predicted values
+Q.corr.pred.df <- data.frame(x = matrix(unlist(Q_RR_df.corr$real$predicted$x)),
+                               y = matrix(unlist(Q_RR_df.corr$real$predicted$y)),
+                             time_scale = "daily",
+                             parameter="Q")
+
+## Sample average line
+Regional.synch <- Q_corrgram_summary.table$Regional.synch
+Q.corr.pred.df$mean_synch <- round(Regional.synch,2)
+
+Regional.synch_x <-  round(Q_corrgram_summary.table$estimates["intercepts", "cbar"], 0)
+Q.corr.pred.df$cbar <- Regional.synch_x
+
+
+# ...and a dataframe of the y values for the bootstrap prediction
+Q.corr.bootValues.df <- as.data.frame(t(Q_RR_df.corr$boot$boot.summary$predicted$y))
+
+# merge x and y values (min and max) for the bootstrap confidence intervals into a dataframe
+Q.corr.boot.df <- data.frame(x = matrix(unlist(Q_RR_df.corr$boot$boot.summary$predicted$x)),
+                               yminQ = Q.corr.bootValues.df$`0.025`,
+                               ymaxQ = Q.corr.bootValues.df$`0.975`,
+                             time_scale = "daily",
+                             parameter="Q")
+
+```
+
+
+```{r, warning=F, size = 'small', echo=F, include=T, cache=TRUE}
+cat(paste0(
+  "$y.intercept: ", round(Q_corrgram_summary.table$estimates["intercepts", "y"], 2), "\n",
+  "$Regional.synch: ", round(Q_corrgram_summary.table$Regional.synch[1], 2), "\n",  
+  "$cbar: ", round(Q_corrgram_summary.table$estimates["intercepts", "cbar"], 0), " km\n",
+  "$x.intercept: ", round(Q_corrgram_summary.table$quantiles["0.5", "x"], 0), " km\n"
+))
+```
+
+#### Daily water temperature:
+
+```{r, size='small', echo=F, include=T, warning=FALSE}
+
+### Water temperature
+RR_dat_TS_temp <- river_metab_dat1 %>%
+  dplyr::select(Site_ID, Lon, Lat, date, temp.water) %>%
+  pivot_wider(names_from = c(date), values_from = temp.water)
+
+# Now, calculate spatial Synchrony in the time series using the Sncf() function
+temp_RR_df.corr <- Sncf(x=RR_dat_TS_temp$Lon,
+                     y=RR_dat_TS_temp$Lat,
+                     z=RR_dat_TS_temp[,4:ncol(RR_dat_TS_temp)],
+                     resamp = 1000,
+                     latlon = T,
+                     na.rm = T)
+
+plot(temp_RR_df.corr)
+temp_corrgram_summary.table <- summary(temp_RR_df.corr)
+
+# Plot using ggplot for export
+# create a dataframe of the predicted values
+temp.corr.pred.df <- data.frame(x = matrix(unlist(temp_RR_df.corr$real$predicted$x)),
+                             y = matrix(unlist(temp_RR_df.corr$real$predicted$y)),
+                             time_scale = "daily",
+                             parameter="water_temp")
+
+## Sample average line
+Regional.synch <- temp_corrgram_summary.table$Regional.synch
+temp.corr.pred.df$mean_synch <- round(Regional.synch,2)
+
+Regional.synch_x <-  round(temp_corrgram_summary.table$estimates["intercepts", "cbar"], 0)
+temp.corr.pred.df$cbar <- Regional.synch_x
+
+
+# ...and a dataframe of the y values for the bootstrap prediction
+temp.corr.bootValues.df <- as.data.frame(t(temp_RR_df.corr$boot$boot.summary$predicted$y))
+
+# merge x and y values (min and max) for the bootstrap confidence intervals into a dataframe
+temp.corr.boot.df <- data.frame(x = matrix(unlist(temp_RR_df.corr$boot$boot.summary$predicted$x)),
+                             yminWtemp = temp.corr.bootValues.df$`0.025`,
+                             ymaxWtemp = temp.corr.bootValues.df$`0.975`,
+                             time_scale = "daily",
+                             parameter="water_temp")
+```
+
+
+```{r, warning=F, size = 'small', echo=F, include=T, cache=TRUE}
+cat(paste0(
+  "$y.intercept: ", round(temp_corrgram_summary.table$estimates["intercepts", "y"], 2), "\n",
+  "$Regional.synch: ", round(temp_corrgram_summary.table$Regional.synch[1], 2), "\n",  
+  "$cbar: ", round(temp_corrgram_summary.table$estimates["intercepts", "cbar"], 0), " km\n",
+  "$x.intercept: ", round(temp_corrgram_summary.table$quantiles["0.5", "x"], 0), " km\n"
+))
+```
+
+#### Daily air temperature:
+
+```{r, size='small', echo=T, include=T, warning=FALSE}
+
+### Water temperature
+RR_dat_TS_Atemp <- river_metab_dat1 %>%
+  dplyr::select(Site_ID, Lon, Lat, date, TmeanC) %>%
+  pivot_wider(names_from = c(date), values_from = TmeanC)
+
+# Now, calculate spatial Synchrony in the time series using the Sncf() function
+Atemp_RR_df.corr <- Sncf(x=RR_dat_TS_Atemp$Lon,
+                     y=RR_dat_TS_Atemp$Lat,
+                     z=RR_dat_TS_Atemp[,4:ncol(RR_dat_TS_Atemp)],
+                     resamp = 1000,
+                     latlon = T,
+                     na.rm = T)
+
+plot(Atemp_RR_df.corr)
+Atemp_corrgram_summary.table <- summary(Atemp_RR_df.corr)
+
+# Plot using ggplot for export
+# create a dataframe of the predicted values
+Atemp.corr.pred.df <- data.frame(x = matrix(unlist(Atemp_RR_df.corr$real$predicted$x)),
+                             y = matrix(unlist(Atemp_RR_df.corr$real$predicted$y)),
+                             time_scale = "daily",
+                             parameter="air_temp")
+
+## Sample average line
+Regional.synch <- Atemp_corrgram_summary.table$Regional.synch
+Atemp.corr.pred.df$mean_synch <- round(Regional.synch,2)
+
+Regional.synch_x <-  round(Atemp_corrgram_summary.table$estimates["intercepts", "cbar"], 0)
+Atemp.corr.pred.df$cbar <- Regional.synch_x
+
+# ...and a dataframe of the y values for the bootstrap prediction
+Atemp.corr.bootValues.df <- as.data.frame(t(Atemp_RR_df.corr$boot$boot.summary$predicted$y))
+
+# merge x and y values (min and max) for the bootstrap confidence intervals into a dataframe
+Atemp.corr.boot.df <- data.frame(x = matrix(unlist(Atemp_RR_df.corr$boot$boot.summary$predicted$x)),
+                             yminAtemp = Atemp.corr.bootValues.df$`0.025`,
+                             ymaxAtemp = Atemp.corr.bootValues.df$`0.975`,
+                             time_scale = "daily",
+                             parameter="air_temp")
+```
+
+
+```{r, warning=F, size = 'small', echo=F, include=T, cache=TRUE}
+cat(paste0(
+  "$y.intercept: ", round(Atemp_corrgram_summary.table$estimates["intercepts", "y"], 2), "\n",
+  "$Regional.synch: ", round(Atemp_corrgram_summary.table$Regional.synch[1], 2), "\n",  
+  "$cbar: ", round(Atemp_corrgram_summary.table$estimates["intercepts", "cbar"], 0), " km\n",
+  "$x.intercept: ", round(Atemp_corrgram_summary.table$quantiles["0.5", "x"], 0), " km\n"
+))
+```
+
+#### Daily PPT:
+
+```{r, size='small', echo=T, include=T, warning=FALSE}
+
+RR_dat_TS_ppt <- river_metab_dat1 %>%
+  dplyr::select(Site_ID, Lon, Lat, date, ppt_mm) %>%
+  pivot_wider(names_from = c(date), values_from = ppt_mm)
+
+# Now, calculate spatial Synchrony in the time series using the Sncf() function
+ppt_RR_df.corr <- Sncf(x=RR_dat_TS_ppt$Lon,
+                        y=RR_dat_TS_ppt$Lat,
+                        z=RR_dat_TS_ppt[,4:ncol(RR_dat_TS_ppt)],
+                        resamp = 1000,
+                        latlon = T,
+                       na.rm = T)
+
+plot(ppt_RR_df.corr)
+
+ppt_corrgram_summary.table <- summary(ppt_RR_df.corr)
+
+# Plot using ggplot for export
+# create a dataframe of the predicted values
+ppt.corr.pred.df <- data.frame(x = matrix(unlist(ppt_RR_df.corr$real$predicted$x)),
+                                y = matrix(unlist(ppt_RR_df.corr$real$predicted$y)),
+                            time_scale = "daily",
+                             parameter="PPT")
+
+## Sample average line
+Regional.synch <- ppt_corrgram_summary.table$Regional.synch
+ppt.corr.pred.df$mean_synch <- round(Regional.synch,2)
+
+Regional.synch_x <-  round(ppt_corrgram_summary.table$estimates["intercepts", "cbar"], 0)
+ppt.corr.pred.df$cbar <- Regional.synch_x
+
+
+# ...and a dataframe of the y values for the bootstrap prediction
+ppt.corr.bootValues.df <- as.data.frame(t(ppt_RR_df.corr$boot$boot.summary$predicted$y))
+
+# merge x and y values (min and max) for the bootstrap confidence intervals into a dataframe
+ppt.corr.boot.df <- data.frame(x = matrix(unlist(ppt_RR_df.corr$boot$boot.summary$predicted$x)),
+                                yminPPT = ppt.corr.bootValues.df$`0.025`,
+                                ymaxPPT = ppt.corr.bootValues.df$`0.975`,
+                                    time_scale = "daily",
+                             parameter="PPT")
+
+```
+
+
+```{r, warning=F, size = 'small', echo=F, include=T, cache=TRUE}
+cat(paste0(
+  "$y.intercept: ", round(ppt_corrgram_summary.table$estimates["intercepts", "y"], 2), "\n",
+  "$Regional.synch: ", round(ppt_corrgram_summary.table$Regional.synch[1], 2), "\n",  
+  "$cbar: ", round(ppt_corrgram_summary.table$estimates["intercepts", "cbar"], 0), " km\n",
+  "$x.intercept: ", round(ppt_corrgram_summary.table$quantiles["0.5", "x"], 0), " km\n"
+))
+```
+
+
+
+#### Light :
+
+```{r, size='small', echo=T, include=T, warning=FALSE}
+
+RR_dat_TS_light <- river_metab_dat1 %>%
+  dplyr::select(Site_ID, Lon, Lat, date, daily_PAR) %>%
+  pivot_wider(names_from = c(date), values_from = daily_PAR)
+
+# Now, calculate spatial Synchrony in the time series using the Sncf() function
+light_RR_df.corr <- Sncf(x=RR_dat_TS_light$Lon,
+                        y=RR_dat_TS_light$Lat,
+                        z=RR_dat_TS_light[,4:ncol(RR_dat_TS_light)],
+                        resamp = 1000,
+                        latlon = T,
+                       na.rm = T)
+
+plot(light_RR_df.corr)
+
+light_corrgram_summary.table <- summary(light_RR_df.corr)
+
+# Plot using ggplot for export
+# create a dataframe of the predicted values
+light.corr.pred.df <- data.frame(x = matrix(unlist(light_RR_df.corr$real$predicted$x)),
+                                y = matrix(unlist(light_RR_df.corr$real$predicted$y)),
+                            time_scale = "daily",
+                             parameter="Light")
+
+## Sample average line
+Regional.synch <- light_corrgram_summary.table$Regional.synch
+light.corr.pred.df$mean_synch <- round(Regional.synch,2)
+
+Regional.synch_x <-  round(light_corrgram_summary.table$estimates["intercepts", "cbar"], 0)
+light.corr.pred.df$cbar <- Regional.synch_x
+
+
+# ...and a dataframe of the y values for the bootstrap prediction
+light.corr.bootValues.df <- as.data.frame(t(light_RR_df.corr$boot$boot.summary$predicted$y))
+
+# merge x and y values (min and max) for the bootstrap confidence intervals into a dataframe
+light.corr.boot.df <- data.frame(x = matrix(unlist(light_RR_df.corr$boot$boot.summary$predicted$x)),
+                                yminlight = light.corr.bootValues.df$`0.025`,
+                                ymaxlight = light.corr.bootValues.df$`0.975`,
+                                    time_scale = "daily",
+                             parameter="Light")
+
+```
+
+
+```{r, warning=F, size = 'small', echo=F, include=T, cache=TRUE}
+cat(paste0(
+  "$y.intercept: ", round(light_corrgram_summary.table$estimates["intercepts", "y"], 2), "\n",
+  "$Regional.synch: ", round(light_corrgram_summary.table$Regional.synch[1], 2), "\n",  
+  "$cbar: ", round(light_corrgram_summary.table$estimates["intercepts", "cbar"], 0), " km\n",
+  "$x.intercept: ", round(light_corrgram_summary.table$quantiles["0.5", "x"], 0), " km\n"
+))
+```
+
+```{r, size='small', echo=F, include=F, warning=FALSE}
+
+big_boot_df<- GPP.corr.boot.df.day %>%
+    left_join(ER.corr.boot.df.day, by=c("x")) %>%
+  left_join(Q.corr.boot.df, by=c("x")) %>%
+  left_join(temp.corr.boot.df, by=c("x")) %>%
+  left_join(ppt.corr.boot.df, by=c("x")) %>%
+  left_join(Atemp.corr.boot.df, by=c("x")) %>%
+   left_join(light.corr.boot.df, by=c("x"))
+
+# Create a vector of unique x values from big_boot_df
+big_x_vals <- unique(big_boot_df$x)
+
+# Add a column to LAI.corr.boot.df.day with the nearest x from big_boot_df
+LAI.corr.boot.df.day <- LAI.corr.boot.df.day %>%
+  mutate(x_nearest = map_dbl(x, ~big_x_vals[which.min(abs(big_x_vals - .x))]))
+
+# light.corr.boot.df.day <- light.corr.boot.df %>%
+#   mutate(x_nearest = map_dbl(x, ~big_x_vals[which.min(abs(big_x_vals - .x))]))
+
+# Now join with big_boot_df using the nearest x value
+joined_df <- LAI.corr.boot.df.day %>%
+  left_join(big_boot_df, by = c("x_nearest" = "x"))
+
+# joined_df <- light.corr.boot.df.day %>%
+#   left_join(big_boot_df, by = c("x_nearest" = "x"))
+
+```
+
+## Figure 3: correlogram of Synchrony of GPP + other hydro/climate/environmental parameters near streams
+
+```{r, size = 'large', echo=FALSE, include=F, warning=FALSE}
+
+pred_df <- bind_rows(
+  Q.corr.pred.df %>% mutate(group = "Flow"),
+  GPP.corr.pred.df.day %>% mutate(group = "GPP"),
+    ER.corr.pred.df.day %>% mutate(group = "ER"),
+  temp.corr.pred.df %>% mutate(group = "Water Temp"),
+  ppt.corr.pred.df %>% mutate(group = "PPT"),
+  Atemp.corr.pred.df %>% mutate(group = "Air Temp"),
+ LAI.corr.pred.df.day %>% mutate(group = "LAI"),
+  light.corr.pred.df%>% mutate(group = "Light")
+)
+
+```
+
+
+###### Look when synchrony dips below the sample average/ regional synch value for each timescale:
+
+This distances where parameters are no longer regionally synchronous
+
+```{r, warning=F, size = 'small', echo=T, include=T}
+
+intersection_df <- pred_df %>%
+  group_by(group) %>%
+  summarise(
+    y= mean(mean_synch),
+    x = mean(cbar))
+
+intersection_df
+```
+
+
+```{r, size = 'large', echo=FALSE, include=T, warning=FALSE}
+ribbon_df <- joined_df %>%
+  transmute(
+    x = x,
+    Flow_ymin = yminQ, Flow_ymax = ymaxQ,
+    GPP_ymin = yminGPP, GPP_ymax = ymaxGPP,
+    ER_ymin = yminER, ER_ymax = ymaxER,
+    WaterTemp_ymin = yminWtemp, WaterTemp_ymax = ymaxWtemp,
+    PPT_ymin = yminPPT, PPT_ymax = ymaxPPT,
+    AirTemp_ymin = yminAtemp, AirTemp_ymax = ymaxAtemp,
+    yminLAI = yminLAI, ymaxLAI = ymaxLAI
+  ) %>%
+  pivot_longer(cols = -x, names_to = c("group", ".value"), names_sep = "_")
+
+synch.plot <- ggplot() +
+  geom_line(data = pred_df%>%dplyr::filter(x<twothirds_dist_km),
+            aes(x = x, y = y, color = group)) +
+     geom_segment(data = intersection_df,
+               aes(x = 0, xend = x, 
+                   y = y, yend = y,
+                   color = group),
+               linetype = "dashed") +
+  # Draw vertical segments from bottom to y_intersect
+  geom_segment(data = intersection_df,
+               aes(x = x, xend = x, 
+                   y = -0.2, yend = y,
+                   color = group),
+               linetype = "dashed") +
+  theme_classic() +
+  scale_color_manual(values = c(
+    "Flow" = "#0072B2",
+    "GPP" = "#1aab1a",
+    "ER" = "#f5880c",
+    "Water Temp" = "#ed1111",
+    "PPT" = "#56B4E9",
+    "Air Temp" = "#de21bb",
+    "Light" = "#E2D523", 
+    "LAI"= "#8f21de"
+  )) +
+   geom_ribbon(data = joined_df%>%dplyr::filter(x<twothirds_dist_km),
+              aes(x = x, ymin = yminQ, ymax = ymaxQ),
+              fill = "#0072B2", alpha=0.2) +
+  geom_ribbon(data = joined_df%>%dplyr::filter(x<twothirds_dist_km),
+              aes(x = x, ymin = yminGPP, ymax = ymaxGPP),
+              fill = "#1aab1a", alpha=0.2) +
+  geom_ribbon(data = joined_df%>%dplyr::filter(x<twothirds_dist_km),
+              aes(x = x, ymin = yminWtemp, ymax = ymaxWtemp),
+              fill = "#ed1111", alpha=0.2) +
+  geom_ribbon(data = joined_df%>%dplyr::filter(x<twothirds_dist_km),
+              aes(x = x, ymin = yminPPT, ymax = ymaxPPT),
+              fill = "#56B4E9", alpha=0.2) +
+  geom_ribbon(data = joined_df%>%dplyr::filter(x<twothirds_dist_km),
+              aes(x = x, ymin = yminAtemp, ymax = ymaxAtemp),
+              fill = "#de21bb", alpha=0.2)+
+      geom_ribbon(data = joined_df%>%dplyr::filter(x<twothirds_dist_km),
+              aes(x = x, ymin = yminlight, ymax = ymaxlight),
+              fill = "#E2D523", alpha=0.2) +
+      geom_ribbon(data = joined_df%>%dplyr::filter(x<twothirds_dist_km),
+              aes(x = x, ymin = yminER, ymax = ymaxER),
+              fill = "#f5880c", alpha=0.2) +
+    geom_ribbon(data = joined_df%>%dplyr::filter(x<twothirds_dist_km),
+              aes(x = x, ymin = yminLAI, ymax = ymaxLAI),
+              fill = "#8f21de", alpha=0.2) +
+    labs(title = "Synchrony of metabolism and\nenvironmental conditions",
+              y= "Correlation",
+       x="Distance (km)",
+       color = "Variable", fill = "Variable") +
+  theme(text = element_text(size=14),
+        legend.position = "bottom") 
+
+synch.plot
+
+```
+
+```{r, warning=F, size = 'small', echo=F, include=FALSE}
+# ggsave("/Users/kellyloria/Documents/River_Recovery_Dynamics_Analysis/figures/Moran_spline_correlogram.png", plot = synch.plot, width =5.5, height = 4.5, units = "in")
+
+```
+
+###### Quantify synchrony decay with distance:
+
+Where b parameter represents the decay rate: higher b = faster loss of
+synchrony with distance.
+
+```{r, warning=F, size = 'small', echo=F, include=T}
+library(dplyr)
+library(purrr)
+library(broom)
+
+
+fit_models <- pred_df%>%dplyr::filter(x<2500) %>% # adjust to x at sample dist
+  group_by(parameter) %>%
+  filter(x<cbar) %>%
+  nest() %>%
+  mutate(model = map(data, ~ nls(y ~ a * exp(-b * x), data = ., start = list(a = 1, b = 0.001))),
+         params = map(model, tidy)) %>%
+  unnest(params)
+
+fit_models
+
+```
+
+| Variable | a (initial synch) | b (decay rate) | Interpretation |
+|-----------|----------:|----------:|-----------------------------------------|
+| **Q (Flow)** | 0.6937 | 0.00223 | Starts moderately synchronized, but decays rapidly over space. |
+| **GPP** | 0.2597 | 0.000037 | Low synchrony, and it barely decays — very stable across space, suggesting local factors |
+| **Water Temp** | 0.9361 | 0.0000285 | High synchrony, — very stable across space |
+| **PPT (Precip)** | 0.9009 | 0.00277 | High synchrony, but decays quickly — similar to flow. Tight confidence intervals. |
+| **Air Temp** | 0.9853 | 0.000103 | The most synchronous slowly decaying — regional coherence in air temp. Tight confidence intervals |
+| **LAI** | 0.6879 | 0.000153 | Moderate synchrony and mild decay — stable across space, suggesting local factors |
+
+
+###### Main take-aways from Fig 3
+
+A. Looks like GPP has the lowest synchrony, showing it is the most
+influenced by localized differences.
+
+B. GPP becomes asynchronous at much smaller distances (797 km shorter
+\~64% than LAI), and at faster rates (64% delta b: 0.0004).
+
+
+
+### defense presentation photo:
+
+
+## Figure 3: correlogram of Synchrony of GPP + other hydro/climate/environmental parameters near streams
+
+```{r, size = 'large', echo=FALSE, include=F, warning=FALSE}
+
+pred_df <- bind_rows(
+  Q.corr.pred.df %>% mutate(group = "Flow"),
+  GPP.corr.pred.df.day %>% mutate(group = "GPP"),
+    ER.corr.pred.df.day %>% mutate(group = "ER"),
+  temp.corr.pred.df %>% mutate(group = "Water Temp"),
+  ppt.corr.pred.df %>% mutate(group = "PPT"),
+  Atemp.corr.pred.df %>% mutate(group = "Air Temp"),
+ LAI.corr.pred.df.day %>% mutate(group = "LAI"),
+  light.corr.pred.df%>% mutate(group = "Light")
+)
+
+```
+
+
+###### Look when synchrony dips below the sample average/ regional synch value for each timescale:
+
+This distances where parameters are no longer regionally synchronous
+
+```{r, warning=F, size = 'small', echo=T, include=T}
+
+intersection_df <- pred_df %>%
+  group_by(group) %>%
+  summarise(
+    y= mean(mean_synch),
+    x = mean(cbar))
+
+
+intersection_df
+```
+
+
+```{r, size = 'large', echo=FALSE, include=T, warning=FALSE}
+ribbon_df <- joined_df %>%
+  transmute(
+    x = x,
+    Flow_ymin = yminQ, Flow_ymax = ymaxQ,
+    GPP_ymin = yminGPP, GPP_ymax = ymaxGPP,
+    ER_ymin = yminER, ER_ymax = ymaxER,
+    WaterTemp_ymin = yminWtemp, WaterTemp_ymax = ymaxWtemp,
+    PPT_ymin = yminPPT, PPT_ymax = ymaxPPT,
+    AirTemp_ymin = yminAtemp, AirTemp_ymax = ymaxAtemp,
+    yminLAI = yminLAI, ymaxLAI = ymaxLAI
+  ) %>%
+  pivot_longer(cols = -x, names_to = c("group", ".value"), names_sep = "_")
+
+synch.plot <- ggplot() +
+  geom_line(data = pred_df%>%dplyr::filter(x<twothirds_dist_km),
+            aes(x = x, y = y, color = group)) +
+     geom_segment(data = intersection_df,
+               aes(x = 0, xend = x, 
+                   y = y, yend = y,
+                   color = group),
+               linetype = "dashed") +
+  # Draw vertical segments from bottom to y_intersect
+  geom_segment(data = intersection_df,
+               aes(x = x, xend = x, 
+                   y = -0.2, yend = y,
+                   color = group),
+               linetype = "dashed") +
+  theme_classic() +
+  ylim(-0.2,1)+
+  scale_color_manual(values = c(
+    "Flow" = "#0072B2",
+    "GPP" = "#1aab1a",
+    "ER" = "#f5880c",
+    "Water Temp" = "#ed1111",
+    "PPT" = "#56B4E9",
+    "Air Temp" = "#de21bb",
+    "Light" = "#E2D523", 
+    "LAI"= "#8f21de"
+  )) +
+   geom_ribbon(data = joined_df%>%dplyr::filter(x<twothirds_dist_km),
+              aes(x = x, ymin = yminQ, ymax = ymaxQ),
+              fill = "#0072B2", alpha=0.2) +
+  geom_ribbon(data = joined_df%>%dplyr::filter(x<twothirds_dist_km),
+              aes(x = x, ymin = yminGPP, ymax = ymaxGPP),
+              fill = "#1aab1a", alpha=0.2) +
+  geom_ribbon(data = joined_df%>%dplyr::filter(x<twothirds_dist_km),
+              aes(x = x, ymin = yminWtemp, ymax = ymaxWtemp),
+              fill = "#ed1111", alpha=0.2) +
+  geom_ribbon(data = joined_df%>%dplyr::filter(x<twothirds_dist_km),
+              aes(x = x, ymin = yminPPT, ymax = ymaxPPT),
+              fill = "#56B4E9", alpha=0.2) +
+  geom_ribbon(data = joined_df%>%dplyr::filter(x<twothirds_dist_km),
+             aes(x = x, ymin = yminAtemp, ymax = ymaxAtemp),
+              fill = "#de21bb", alpha=0.2)+
+      geom_ribbon(data = joined_df%>%dplyr::filter(x<twothirds_dist_km),
+              aes(x = x, ymin = yminlight, ymax = ymaxlight),
+              fill = "#E2D523", alpha=0.2) +
+      geom_ribbon(data = joined_df%>%dplyr::filter(x<twothirds_dist_km),
+              aes(x = x, ymin = yminER, ymax = ymaxER),
+              fill = "#f5880c", alpha=0.2) +
+    geom_ribbon(data = joined_df%>%dplyr::filter(x<twothirds_dist_km),
+              aes(x = x, ymin = yminLAI, ymax = ymaxLAI),
+              fill = "#8f21de", alpha=0.2) +
+    labs(y= "Correlation",
+       x="Distance (km)",
+       color = "Variable", fill = "Variable") +
+  theme(text = element_text(size=14),
+        legend.position = "bottom") 
+
+synch.plot
+
+```
+```{r, warning=F, size = 'small', echo=F, include=FALSE}
+# ggsave("/Users/kellyloria/Documents/River_Recovery_Dynamics_Analysis/figures/Moran_spline_correlogram_p4.png", plot = synch.plot, width =6, height = 5, units = "in")
+
+```
+
+
